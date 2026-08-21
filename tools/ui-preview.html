@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="../src/main/resources/web/app.css?v=2">
+</head>
+<body>
+  <div id="app"></div>
+  <script>
+    const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',streamResponses:true,showReasoning:true,globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['gpt-5.6-codex','gpt-5.4']};
+    window.codexHost = payload => {
+      const message = JSON.parse(payload);
+      if (message.action === 'toggleReasoning') previewState.showReasoning = !previewState.showReasoning;
+      if (message.action === 'toggleStreaming') previewState.streamResponses = !previewState.streamResponses;
+      if (message.action === 'setting') previewState[message.key] = message.value;
+      if (['toggleReasoning','toggleStreaming','setting'].includes(message.action)) CodexGui.receive({type:'bootstrap',state:previewState});
+      if (message.action !== 'ready') return;
+      setTimeout(() => {
+        CodexGui.receive({type:'bootstrap',state:previewState});
+        CodexGui.receive({type:'message',entry:{kind:'user',title:'你',body:'先分析项目结构，然后把 Codex CLI 的全部修改捕获到修改列表。'}});
+        CodexGui.receive({type:'message',entry:{kind:'reasoning',title:'推理',itemId:'r1',body:'正在检查插件入口、app-server 协议和工作区快照边界。'}});
+        CodexGui.receive({type:'message',entry:{kind:'command',title:'命令',itemId:'c1',body:'$ rg --files src/main\n\nsrc/main/java/com/codexgui/ui/CodexToolWindowPanel.java\nsrc/main/resources/web/app.css\n\n退出码：0'}});
+        CodexGui.receive({type:'message',entry:{kind:'assistant',title:'Codex',itemId:'a1',body:'已经完成单列工具窗重构。\n\n## 当前结构\n\n- 历史与设置改为页内切换\n- 用户消息右侧气泡，Codex 输出保持平面 Markdown\n- 修改面板固定在输入框上方\n\n```java\nvar capture = changeService.beginCaptureAsync();\n```'}});
+        CodexGui.receive({type:'changes',items:[{path:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java',kind:'MODIFIED',reversible:true,diff:'@@ -1 +1 @@\n-old\n+new\n+line'},{path:'src/main/resources/web/app.css',kind:'ADDED',reversible:true,diff:'@@ -0 +1 @@\n+styles'}]});
+        if (location.search.includes('question')) CodexGui.receive({type:'question',requestId:42,questions:[{id:'approach',header:'实现方案',question:'你希望设置页采用哪种信息结构？',isOther:true,options:[{label:'固定侧栏',description:'与 CC-Gui 一致，左侧分类始终可见，右侧只展示当前分类。'},{label:'分组长页',description:'所有设置按卡片连续排列，适合快速浏览但信息更拥挤。'},{label:'极简设置',description:'只保留模型、审批与权限，不符合当前完整复刻目标。'}]},{id:'density',header:'界面密度',question:'请选择更符合你习惯的密度。',isOther:false,options:[{label:'紧凑',description:'更接近 JetBrains 工具窗与 CC-Gui。'},{label:'宽松',description:'留白更多，适合独立大窗口。'}]}]});
+      }, 0);
+    };
+  </script>
+  <script src="../src/main/resources/web/app.js"></script>
+</body>
+</html>

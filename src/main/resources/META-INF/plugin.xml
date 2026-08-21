@@ -1,0 +1,28 @@
+<idea-plugin>
+    <id>com.codexgui.jetbrains</id>
+    <name>Codex GUI</name>
+    <vendor>Codex GUI</vendor>
+
+    <description><![CDATA[
+      面向 JetBrains IDE 的原生 Codex CLI 图形界面。直接连接 Codex app-server，
+      不注入第三方提示词，不包含其它模型供应商。
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Codex"
+                    anchor="right"
+                    icon="/icons/codex.svg"
+                    factoryClass="com.codexgui.ui.CodexToolWindowFactory"
+                    canCloseContents="false"/>
+        <applicationConfigurable id="com.codexgui.settings"
+                                 parentId="tools"
+                                 displayName="Codex GUI"
+                                 instance="com.codexgui.settings.CodexSettingsConfigurable"/>
+        <applicationService serviceImplementation="com.codexgui.settings.CodexSettingsState"/>
+        <projectService serviceImplementation="com.codexgui.service.CodexAppServerService"/>
+        <projectService serviceImplementation="com.codexgui.service.WorkspaceChangeService"/>
+        <projectService serviceImplementation="com.codexgui.settings.CodexProjectSettingsState"/>
+    </extensions>
+</idea-plugin>

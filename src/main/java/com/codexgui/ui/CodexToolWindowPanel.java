@@ -171,6 +171,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "loadSkills" -> publishSkills(false);
                 case "reloadSkills" -> publishSkills(true);
                 case "attachSkill" -> attachSkill(request);
+                case "setSkillEnabled" -> setSkillEnabled(request);
                 case "openMcpConfig" -> openMcpConfig();
                 case "answerQuestions" -> answerQuestions(request, false);
                 case "cancelQuestions" -> answerQuestions(request, true);
@@ -211,6 +212,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         transcript.forEach(this::publishEntry);
         publishChanges(changeService.getChanges());
         publishSkills(false);
+        // 页面可能晚于 CLI 连接完成，准备完成后重新请求模型，避免模型事件丢失。
+        loadModels();
     }
 
     private void sendInput(String text) {
@@ -291,10 +294,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         codex.listModels().thenAccept(result -> {
             var models = new JsonArray();
             String defaultModel = null;
-            for (var element : array(result, "data")) {
+            var modelItems = array(result, "data");
+            if (modelItems.isEmpty()) modelItems = array(result, "models");
+            for (var element : modelItems) {
                 var model = element.getAsJsonObject();
                 if (model.has("hidden") && model.get("hidden").getAsBoolean()) continue;
-                var id = string(model, "model", string(model, "id", ""));
+                var id = string(model, "model", "");
+                if (id.isBlank()) id = string(model, "id", string(model, "slug", ""));
                 if (!id.isBlank()) models.add(id);
                 if (model.has("isDefault") && model.get("isDefault").getAsBoolean()) defaultModel = id;
             }
@@ -419,6 +425,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             for (var entry : array(result, "data")) {
                 for (var skill : array(entry.getAsJsonObject(), "skills")) {
                     var object = skill.getAsJsonObject();
+                    if (object.has("enabled") && !object.get("enabled").getAsBoolean()) continue;
                     skills.add(new SkillChoice(string(object, "name", "Skill"), Path.of(string(object, "path", "")), string(object, "description", "")));
                 }
             }
@@ -452,7 +459,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                     var item = new JsonObject();
                     item.addProperty("name", string(object, "name", "Skill"));
                     item.addProperty("path", string(object, "path", ""));
-                    item.addProperty("description", string(object, "description", ""));
+                    item.addProperty("description", string(object, "description", string(object, "shortDescription", "")));
+                    item.addProperty("enabled", !object.has("enabled") || object.get("enabled").getAsBoolean());
+                    item.addProperty("scope", string(object, "scope", "repo"));
                     items.add(item);
                 }
             }
@@ -462,6 +471,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             if (reload) toast(items.size() == 0 ? "当前工作区没有可用的 Skill" : "Skills 已重新加载");
         })).exceptionally(error -> {
             asyncError("无法读取 Skills", error);
+            return null;
+        });
+    }
+
+    private void setSkillEnabled(JsonObject request) {
+        var name = string(request, "name", "");
+        var path = string(request, "path", "");
+        var enabled = request.has("enabled") && request.get("enabled").getAsBoolean();
+        codex.setSkillEnabled(name, path, enabled).thenRun(() -> publishSkills(false)).exceptionally(error -> {
+            asyncError(enabled ? "无法启用 Skill" : "无法停用 Skill", error);
             return null;
         });
     }
@@ -724,12 +743,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (!settings.globalInstructions.isBlank()) instructions.add(settings.globalInstructions.trim());
         var projectInstructions = CodexProjectSettingsState.getInstance(project).getState().projectInstructions;
         if (!projectInstructions.isBlank()) instructions.add(projectInstructions.trim());
-        settings.prompts.stream()
-            .filter(prompt -> Objects.equals(prompt.id, settings.activePromptId))
-            .findFirst()
-            .map(prompt -> prompt.instructions)
-            .filter(value -> !value.isBlank())
-            .ifPresent(value -> instructions.add(value.trim()));
         settings.agents.stream()
             .filter(agent -> Objects.equals(agent.id, settings.activeAgentId))
             .findFirst()

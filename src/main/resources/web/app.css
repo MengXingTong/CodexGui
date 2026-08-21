@@ -289,6 +289,7 @@ button { color: inherit; }
 .agent-card, .prompt-card, .skill-card, .mcp-card { min-height: 66px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 7px; background: #252526; color: var(--text); text-align: left; }
 button.agent-card, button.prompt-card { width: 100%; cursor: pointer; }
 .agent-card.active, .prompt-card.active { border-color: #168bd2; background: rgba(14,99,156,.16); }
+.skill-card.disabled { opacity: .62; }
 .agent-main, .prompt-main { min-width: 0; flex: 1; display: flex; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .agent-avatar, .prompt-avatar, .skill-icon, .mcp-icon { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; background: #333; color: #bbb; }
 .agent-avatar svg, .prompt-avatar svg, .skill-icon svg, .mcp-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; }
@@ -303,6 +304,25 @@ button.agent-card, button.prompt-card { width: 100%; cursor: pointer; }
 .card-action.danger:hover { color: var(--red); }
 .card-action svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 .mcp-tools { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.skill-toggle { width: 36px; height: 20px; flex: 0 0 auto; padding: 2px; border: 0; border-radius: 10px; background: #555; cursor: pointer; }
+.skill-toggle span { display: block; width: 16px; height: 16px; border-radius: 50%; background: #ddd; transition: transform .15s; }
+.skill-toggle.on { background: var(--accent); }
+.skill-toggle.on span { transform: translateX(16px); }
+.mcp-card { display: flex; flex-direction: column; align-items: stretch; gap: 0; padding: 0; overflow: hidden; }
+.mcp-card-head { min-height: 66px; display: flex; align-items: center; gap: 9px; padding: 10px 12px; }
+.mcp-card-meta { display: flex; align-items: center; gap: 14px; padding: 7px 12px; border-top: 1px solid rgba(255,255,255,.06); border-bottom: 1px solid rgba(255,255,255,.06); color: var(--muted); font-size: 11px; }
+.mcp-card-meta span { display: inline-flex; align-items: center; gap: 5px; }
+.mcp-card-meta svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.mcp-status { flex: 0 0 auto; padding: 3px 7px; border-radius: 4px; color: var(--green); background: rgba(137,209,133,.1); font-size: 10px; }
+.mcp-status.warning { color: var(--orange); background: rgba(215,186,125,.1); }
+.mcp-tool-list { display: flex; flex-wrap: wrap; gap: 5px; padding: 10px 12px 12px; }
+.mcp-tool-pill { max-width: 210px; overflow: hidden; padding: 3px 7px; border: 1px solid var(--border-strong); border-radius: 4px; color: #b8b8b8; font: 10px var(--code-font); text-overflow: ellipsis; white-space: nowrap; }
+.mcp-tool-more, .mcp-tool-empty { padding: 3px 0; color: var(--muted); font-size: 10px; }
+.mcp-summary { display: flex; gap: 10px; margin-bottom: 12px; }
+.mcp-summary > span { min-width: 115px; display: grid; grid-template-columns: 20px auto; grid-template-rows: auto auto; column-gap: 8px; padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 7px; background: #252526; }
+.mcp-summary svg { width: 18px; height: 18px; grid-row: 1 / span 2; align-self: center; fill: none; stroke: #aaa; stroke-width: 1.7; }
+.mcp-summary b { color: var(--text-strong); font-size: 15px; line-height: 1.1; }
+.mcp-summary small { color: var(--muted); font-size: 10px; }
 .subsection-heading { margin: 0 0 12px; padding-top: 19px; border-top: 1px solid var(--border); }
 .subsection-heading h3 { margin: 0 0 3px; color: var(--text-strong); font-size: 14px; }
 .subsection-heading p { margin: 0; color: var(--muted); font-size: 11px; }

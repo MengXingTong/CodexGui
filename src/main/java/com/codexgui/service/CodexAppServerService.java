@@ -154,6 +154,14 @@ public final class CodexAppServerService implements Disposable {
         return request("skills/list", params);
     }
 
+    public CompletableFuture<JsonObject> setSkillEnabled(String name, String path, boolean enabled) {
+        var params = new JsonObject();
+        params.addProperty("enabled", enabled);
+        if (name != null && !name.isBlank()) params.addProperty("name", name);
+        if (path != null && !path.isBlank()) params.addProperty("path", path);
+        return request("skills/config/write", params);
+    }
+
     public CompletableFuture<JsonObject> startThread(
         String model,
         String effort,

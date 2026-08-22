@@ -24,5 +24,8 @@
         <projectService serviceImplementation="com.codexgui.service.CodexAppServerService"/>
         <projectService serviceImplementation="com.codexgui.service.WorkspaceChangeService"/>
         <projectService serviceImplementation="com.codexgui.settings.CodexProjectSettingsState"/>
+        <notificationGroup id="Codex GUI Notifications"
+                           displayType="BALLOON"
+                           isLogByDefault="false"/>
     </extensions>
 </idea-plugin>

@@ -16,6 +16,8 @@ repositories {
 }
 
 dependencies {
+    implementation("javazoom:jlayer:1.0.1")
+
     intellijPlatform {
         intellijIdeaCommunity("2024.3.7")
         pluginVerifier()

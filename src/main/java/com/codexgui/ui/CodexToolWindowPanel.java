@@ -5,24 +5,33 @@ import com.codexgui.model.ChangeEntry;
 import com.codexgui.model.ConversationEntry;
 import com.codexgui.service.CodexAppServerService;
 import com.codexgui.service.CodexEventListener;
+import com.codexgui.service.NotificationSoundPlayer;
 import com.codexgui.service.WorkspaceChangeService;
 import com.codexgui.settings.CodexSettingsState;
 import com.codexgui.settings.CodexProjectSettingsState;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.intellij.diff.DiffContentFactory;
 import com.intellij.diff.DiffManager;
 import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.ide.BrowserUtil;
+import com.intellij.notification.NotificationGroupManager;
+import com.intellij.notification.NotificationType;
+import com.intellij.openapi.ide.CopyPasteManager;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.fileEditor.FileEditorManagerEvent;
+import com.intellij.openapi.fileEditor.FileEditorManagerListener;
 import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.wm.WindowManager;
 import com.intellij.ui.jcef.JBCefApp;
 import com.intellij.ui.jcef.JBCefBrowser;
 import com.intellij.ui.jcef.JBCefBrowserBase;
@@ -30,6 +39,7 @@ import com.intellij.ui.jcef.JBCefJSQuery;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.datatransfer.StringSelection;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -39,7 +49,11 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -53,6 +67,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private final Project project;
     private final CodexAppServerService codex;
     private final WorkspaceChangeService changeService;
+    private final NotificationSoundPlayer notificationSoundPlayer = new NotificationSoundPlayer();
     private final List<Attachment> attachments = new ArrayList<>();
     private final List<ConversationEntry> transcript = new ArrayList<>();
     private final Consumer<List<ChangeEntry>> changeListener;
@@ -65,6 +80,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private String pendingUserBody;
     private boolean busy;
     private boolean pageReady;
+    private long usageUsedTokens;
+    private long usageMaxTokens;
 
     CodexToolWindowPanel(Project project) {
         super(new BorderLayout());
@@ -92,6 +109,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
         codex.addListener(this);
         changeService.addListener(changeListener);
+        project.getMessageBus().connect(this).subscribe(
+            FileEditorManagerListener.FILE_EDITOR_MANAGER,
+            new FileEditorManagerListener() {
+                @Override
+                public void selectionChanged(FileEditorManagerEvent event) {
+                    publishFileContext();
+                }
+            }
+        );
         codex.start().thenRun(() -> {
             loadModels();
             loadHistory("");
@@ -144,7 +170,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "export" -> exportConversation();
                 case "pickFile" -> chooseAttachment(false);
                 case "pickImage" -> chooseAttachment(true);
-                case "pickSkill" -> chooseSkill();
                 case "removeAttachment" -> removeAttachment(integer(request, "index"));
                 case "acceptChange" -> acceptChange(integer(request, "index"));
                 case "revertChange" -> revertChange(integer(request, "index"));
@@ -157,6 +182,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "mcp" -> showMcpServers();
                 case "usage" -> showUsage();
                 case "setting" -> updateSetting(string(request, "key", ""), string(request, "value", ""));
+                case "behaviorSetting" -> updateBehaviorSetting(request);
+                case "browseNotificationSound" -> browseNotificationSound();
+                case "testNotificationSound" -> playConfiguredSound(true);
                 case "toggleReasoning" -> toggleReasoning();
                 case "toggleStreaming" -> toggleStreaming();
                 case "saveInstructions" -> saveInstructions(request);
@@ -170,9 +198,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "reloadMcp" -> publishMcpServers(true);
                 case "loadSkills" -> publishSkills(false);
                 case "reloadSkills" -> publishSkills(true);
-                case "attachSkill" -> attachSkill(request);
                 case "setSkillEnabled" -> setSkillEnabled(request);
+                case "importSkill" -> importSkill(string(request, "scope", "repo"));
+                case "openSkill" -> openSkill(request);
                 case "openMcpConfig" -> openMcpConfig();
+                case "loginMcp" -> loginMcpServer(request);
+                case "saveMcp" -> saveMcpServer(request);
+                case "deleteMcp" -> deleteMcpServer(request);
+                case "setMcpEnabled" -> setMcpServerEnabled(request);
+                case "copyText" -> copyText(request);
                 case "answerQuestions" -> answerQuestions(request, false);
                 case "cancelQuestions" -> answerQuestions(request, true);
                 case "conversationSearch" -> searchConversation();
@@ -199,6 +233,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("sandbox", settings.sandboxMode);
         state.addProperty("streamResponses", settings.streamResponses);
         state.addProperty("showReasoning", settings.showReasoning);
+        addBehaviorSettings(state, settings);
         state.addProperty("globalInstructions", settings.globalInstructions);
         state.addProperty("activePromptId", settings.activePromptId);
         state.add("prompts", promptsJson(settings.prompts));
@@ -229,11 +264,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
         if (attachments.isEmpty() && handleNativeCommand(text)) return;
 
+        var settings = CodexSettingsState.getInstance().getState();
+        var openedFile = settings.sendOpenedFilePath ? openedFileContext() : "";
+        var inputText = openedFile.isBlank() ? text : text + "\n\n[当前打开文件路径] " + openedFile;
         var sentAttachments = List.copyOf(attachments);
-        var display = new StringBuilder(text);
+        var display = new StringBuilder(inputText);
         sentAttachments.forEach(attachment -> display.append("\n").append(switch (attachment.kind()) {
             case IMAGE -> "[图片] ";
-            case SKILL -> "[Skill] ";
             case FILE -> "@";
         }).append(attachment.name()));
         pendingUserBody = display.toString().trim();
@@ -242,7 +279,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         publishAttachments();
         setBusy(true);
 
-        var settings = CodexSettingsState.getInstance().getState();
         var capture = changeService.beginCaptureAsync().thenCompose(ignored -> currentThreadId == null
             ? codex.startThread(
                 settings.model,
@@ -258,7 +294,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                     return currentThreadId;
                 })
             : CompletableFuture.completedFuture(currentThreadId));
-        var inputText = text;
         capture.thenCompose(threadId -> codex.startTurn(
             threadId, inputText, sentAttachments, settings.model, settings.reasoningEffort,
             settings.serviceTier,
@@ -364,6 +399,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void newConversation() {
         if (busy) return;
+        var settings = CodexSettingsState.getInstance().getState();
+        if (settings.newSessionConfirmEnabled && !transcript.isEmpty()
+            && Messages.showYesNoDialog(project, "当前会话已有消息，确定要新建会话吗？", "新建会话", "新建", "取消", Messages.getQuestionIcon()) != Messages.YES) {
+            return;
+        }
         currentThreadId = null;
         currentTurnId = null;
         currentTitle = "新会话";
@@ -373,6 +413,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void clearConversation() {
         transcript.clear();
+        usageUsedTokens = 0;
+        usageMaxTokens = 0;
         var event = event("clear");
         event.addProperty("title", currentTitle);
         if (currentThreadId != null) event.addProperty("threadId", currentThreadId);
@@ -415,46 +457,33 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         chooser.setDialogTitle(image ? "选择图片" : "选择引用文件");
         if (image) chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("图片", "png", "jpg", "jpeg", "gif", "webp"));
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
-        for (var file : chooser.getSelectedFiles()) attachments.add(new Attachment(image ? Attachment.Kind.IMAGE : Attachment.Kind.FILE, file.getName(), file.toPath()));
+        for (var file : chooser.getSelectedFiles()) {
+            var path = file.toPath();
+            var kind = image || isImageAttachment(path) ? Attachment.Kind.IMAGE : Attachment.Kind.FILE;
+            attachments.add(new Attachment(kind, file.getName(), path));
+        }
         publishAttachments();
     }
 
-    private void chooseSkill() {
-        codex.listSkills().thenAccept(result -> ApplicationManager.getApplication().invokeLater(() -> {
-            var skills = new ArrayList<SkillChoice>();
-            for (var entry : array(result, "data")) {
-                for (var skill : array(entry.getAsJsonObject(), "skills")) {
-                    var object = skill.getAsJsonObject();
-                    if (object.has("enabled") && !object.get("enabled").getAsBoolean()) continue;
-                    skills.add(new SkillChoice(string(object, "name", "Skill"), Path.of(string(object, "path", "")), string(object, "description", "")));
-                }
-            }
-            if (skills.isEmpty()) {
-                Messages.showInfoMessage(project, "当前工作区没有可用的 Codex Skill。", "Skills");
-                return;
-            }
-            var labels = skills.stream().map(skill -> skill.name() + " — " + skill.description()).toArray(String[]::new);
-            var selected = Messages.showEditableChooseDialog("选择要附加到下一条消息的 Skill", "Codex Skills", null, labels, labels[0], null);
-            if (selected == null) return;
-            for (int index = 0; index < labels.length; index++) {
-                if (!labels[index].equals(selected)) continue;
-                var skill = skills.get(index);
-                attachments.add(new Attachment(Attachment.Kind.SKILL, skill.name(), skill.path()));
-                publishAttachments();
-                return;
-            }
-        })).exceptionally(error -> {
-            asyncError("无法读取 Skills", error);
-            return null;
-        });
+    private boolean isImageAttachment(Path path) {
+        var name = path.getFileName().toString().toLowerCase(Locale.ROOT);
+        return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")
+            || name.endsWith(".gif") || name.endsWith(".webp");
     }
 
-    private void publishSkills(boolean reload) {
-        // 读取当前工作区的原生 Skills，并同步到设置页供浏览与附加。
-        codex.listSkills().thenAccept(result -> ApplicationManager.getApplication().invokeLater(() -> {
+    private void publishSkills(boolean forceReload) {
+        publishSkills(forceReload, forceReload);
+    }
+
+    private void publishSkills(boolean forceReload, boolean notify) {
+        // 读取当前工作区的原生 Skills，并同步到设置页供浏览和启停。
+        codex.listSkills(forceReload).thenAccept(result -> ApplicationManager.getApplication().invokeLater(() -> {
             var items = new JsonArray();
+            var errors = new JsonArray();
             for (var entry : array(result, "data")) {
-                for (var skill : array(entry.getAsJsonObject(), "skills")) {
+                var group = entry.getAsJsonObject();
+                for (var error : array(group, "errors")) errors.add(error.deepCopy());
+                for (var skill : array(group, "skills")) {
                     var object = skill.getAsJsonObject();
                     var item = new JsonObject();
                     item.addProperty("name", string(object, "name", "Skill"));
@@ -462,13 +491,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                     item.addProperty("description", string(object, "description", string(object, "shortDescription", "")));
                     item.addProperty("enabled", !object.has("enabled") || object.get("enabled").getAsBoolean());
                     item.addProperty("scope", string(object, "scope", "repo"));
+                    if (object.has("interface") && object.get("interface").isJsonObject()) item.add("interface", object.getAsJsonObject("interface").deepCopy());
+                    if (object.has("dependencies") && object.get("dependencies").isJsonObject()) item.add("dependencies", object.getAsJsonObject("dependencies").deepCopy());
                     items.add(item);
                 }
             }
             var event = event("skills");
             event.add("items", items);
+            event.add("errors", errors);
             sendEvent(event);
-            if (reload) toast(items.size() == 0 ? "当前工作区没有可用的 Skill" : "Skills 已重新加载");
+            if (notify) toast(items.size() == 0 ? "当前工作区没有可用的 Skill" : "Skills 已重新加载");
         })).exceptionally(error -> {
             asyncError("无法读取 Skills", error);
             return null;
@@ -476,26 +508,111 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void setSkillEnabled(JsonObject request) {
-        var name = string(request, "name", "");
         var path = string(request, "path", "");
         var enabled = request.has("enabled") && request.get("enabled").getAsBoolean();
-        codex.setSkillEnabled(name, path, enabled).thenRun(() -> publishSkills(false)).exceptionally(error -> {
+        if (path.isBlank()) {
+            toast("该 Skill 缺少有效路径");
+            return;
+        }
+        codex.setSkillEnabled(path, enabled).thenAccept(result -> ApplicationManager.getApplication().invokeLater(() -> {
+            var effectiveEnabled = result.has("effectiveEnabled") && result.get("effectiveEnabled").getAsBoolean();
+            var event = event("skillEnabled");
+            event.addProperty("path", path);
+            event.addProperty("enabled", effectiveEnabled);
+            sendEvent(event);
+            toast(effectiveEnabled ? "Skill 已启用，Codex 可自动调用" : "Skill 已停用");
+            publishSkills(true, false);
+        })).exceptionally(error -> {
+            publishSkills(true, false);
             asyncError(enabled ? "无法启用 Skill" : "无法停用 Skill", error);
             return null;
         });
     }
 
-    private void attachSkill(JsonObject request) {
-        // 将选中的 Skill 作为下一条消息的原生输入项，不拼接隐藏提示词。
-        var name = string(request, "name", "Skill").trim();
-        var path = string(request, "path", "").trim();
-        if (path.isBlank()) {
+    private void importSkill(String scope) {
+        var chooser = new JFileChooser(changeService.getRoot().toFile());
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        chooser.setDialogTitle(Objects.equals(scope, "user") ? "选择要导入的用户 Skill 目录" : "选择要导入的项目 Skill 目录");
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+
+        var source = chooser.getSelectedFile().toPath().toAbsolutePath().normalize();
+        if (!Files.isRegularFile(source.resolve("SKILL.md"))) {
+            Messages.showErrorDialog(project, "所选目录中没有 SKILL.md。", "导入 Skill 失败");
+            return;
+        }
+
+        var parent = Objects.equals(scope, "user")
+            ? userSkillsDirectory()
+            : changeService.getRoot().resolve(".codex").resolve("skills");
+        parent = parent.toAbsolutePath().normalize();
+        var target = parent.resolve(source.getFileName()).normalize();
+        if (!target.startsWith(parent) || Objects.equals(source, target)) {
+            toast(Objects.equals(source, target) ? "该 Skill 已位于目标目录" : "Skill 目标路径无效");
+            return;
+        }
+        if (Files.exists(target)) {
+            Messages.showErrorDialog(project, "目标目录已存在：\n" + target, "导入 Skill 失败");
+            return;
+        }
+
+        try {
+            Files.createDirectories(parent);
+            copySkillDirectory(source, target);
+            LocalFileSystem.getInstance().refreshNioFiles(List.of(target), true, true, null);
+            toast(Objects.equals(scope, "user") ? "用户 Skill 已导入" : "项目 Skill 已导入");
+            publishSkills(true, false);
+        } catch (IOException error) {
+            deleteImportedDirectory(target);
+            Messages.showErrorDialog(project, error.getMessage(), "导入 Skill 失败");
+        }
+    }
+
+    private Path userSkillsDirectory() {
+        var configuredHome = System.getenv("CODEX_HOME");
+        var codexHome = configuredHome == null || configuredHome.isBlank()
+            ? Path.of(System.getProperty("user.home"), ".codex")
+            : Path.of(configuredHome);
+        return codexHome.resolve("skills");
+    }
+
+    private void copySkillDirectory(Path source, Path target) throws IOException {
+        try (var entries = Files.walk(source)) {
+            for (var iterator = entries.iterator(); iterator.hasNext(); ) {
+                var path = iterator.next();
+                var destination = target.resolve(source.relativize(path));
+                if (Files.isDirectory(path)) Files.createDirectories(destination);
+                else Files.copy(path, destination);
+            }
+        }
+    }
+
+    private void deleteImportedDirectory(Path target) {
+        if (!Files.exists(target)) return;
+        try (var entries = Files.walk(target)) {
+            for (var path : entries.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(path);
+        } catch (IOException ignored) {
+            // 清理对象只可能是本次导入创建的新目录，失败时保留现场供用户检查。
+        }
+    }
+
+    private void openSkill(JsonObject request) {
+        var rawPath = string(request, "path", "").trim();
+        if (rawPath.isBlank()) {
             toast("该 Skill 缺少有效路径");
             return;
         }
-        attachments.add(new Attachment(Attachment.Kind.SKILL, name, Path.of(path)));
-        publishAttachments();
-        toast("Skill 已附加到下一条消息");
+        try {
+            var path = Path.of(rawPath);
+            var target = Files.isDirectory(path) ? path.resolve("SKILL.md") : path;
+            var file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(target);
+            if (file == null) {
+                toast("无法打开 Skill 源文件");
+                return;
+            }
+            new OpenFileDescriptor(project, file).navigate(true);
+        } catch (RuntimeException error) {
+            Messages.showErrorDialog(project, error.getMessage(), "打开 Skill 失败");
+        }
     }
 
     private void removeAttachment(int index) {
@@ -603,6 +720,93 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             }
         }
         publishSettings();
+    }
+
+    private void updateBehaviorSetting(JsonObject request) {
+        var settings = CodexSettingsState.getInstance().getState();
+        var key = string(request, "key", "");
+        switch (key) {
+            case "sendShortcut" -> settings.sendShortcut = Objects.equals(string(request, "value", "enter"), "cmdEnter") ? "cmdEnter" : "enter";
+            case "permissionDialogTimeoutSeconds" -> settings.permissionDialogTimeoutSeconds = Math.max(30, Math.min(3600, integer(request, "value")));
+            case "streamResponses" -> settings.streamResponses = bool(request, "value", true);
+            case "sendOpenedFilePath" -> settings.sendOpenedFilePath = bool(request, "value", true);
+            case "diffExpandedByDefault" -> settings.diffExpandedByDefault = bool(request, "value", false);
+            case "newSessionConfirmEnabled" -> settings.newSessionConfirmEnabled = bool(request, "value", true);
+            case "askUserQuestionNotificationEnabled" -> settings.askUserQuestionNotificationEnabled = bool(request, "value", false);
+            case "askUserQuestionSoundEnabled" -> settings.askUserQuestionSoundEnabled = bool(request, "value", false);
+            case "taskCompletionNotificationEnabled" -> settings.taskCompletionNotificationEnabled = bool(request, "value", false);
+            case "taskCompletionSoundEnabled" -> settings.taskCompletionSoundEnabled = bool(request, "value", false);
+            case "systemNotificationOnlyWhenUnfocused" -> settings.systemNotificationOnlyWhenUnfocused = bool(request, "value", false);
+            case "soundOnlyWhenUnfocused" -> settings.soundOnlyWhenUnfocused = bool(request, "value", false);
+            case "notificationSound" -> {
+                var sound = string(request, "value", "default");
+                settings.notificationSound = NotificationSoundPlayer.BUILT_IN_SOUND_IDS.contains(sound) || Objects.equals(sound, "custom") ? sound : "default";
+            }
+            case "customSoundPath" -> settings.customSoundPath = string(request, "value", "").trim();
+            default -> {
+                return;
+            }
+        }
+        publishSettings();
+    }
+
+    private String openedFileContext() {
+        var selectedFiles = FileEditorManager.getInstance(project).getSelectedFiles();
+        if (selectedFiles.length == 0) return "";
+        try {
+            var file = Path.of(selectedFiles[0].getPath()).toAbsolutePath().normalize();
+            var root = changeService.getRoot().toAbsolutePath().normalize();
+            return file.startsWith(root) ? root.relativize(file).toString() : file.toString();
+        } catch (RuntimeException ignored) {
+            return selectedFiles[0].getPath();
+        }
+    }
+
+    private void publishFileContext() {
+        var settings = CodexSettingsState.getInstance().getState();
+        var event = event("fileContext");
+        event.addProperty("path", settings.sendOpenedFilePath ? openedFileContext() : "");
+        sendEvent(event);
+    }
+
+    private void browseNotificationSound() {
+        var chooser = new JFileChooser(changeService.getRoot().toFile());
+        chooser.setDialogTitle("选择自定义提示音");
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("音频文件（WAV、MP3、AIFF）", "wav", "mp3", "aif", "aiff"));
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        var settings = CodexSettingsState.getInstance().getState();
+        settings.notificationSound = "custom";
+        settings.customSoundPath = chooser.getSelectedFile().getAbsolutePath();
+        publishSettings();
+    }
+
+    private void playConfiguredSound(boolean reportError) {
+        var settings = CodexSettingsState.getInstance().getState();
+        if (Objects.equals(settings.notificationSound, "custom") && settings.customSoundPath.isBlank()) {
+            if (reportError) toast("请先选择自定义音频文件");
+            return;
+        }
+        notificationSoundPlayer.play(settings.notificationSound, settings.customSoundPath).exceptionally(error -> {
+            if (reportError) ApplicationManager.getApplication().invokeLater(() -> toast("提示音播放失败：" + errorMessage(error)));
+            return null;
+        });
+    }
+
+    private boolean isIdeFocused() {
+        var frame = WindowManager.getInstance().getFrame(project);
+        return frame != null && frame.isFocused();
+    }
+
+    private void notifyAttention(String title, String content, boolean notificationEnabled, boolean soundEnabled) {
+        var settings = CodexSettingsState.getInstance().getState();
+        var focused = isIdeFocused();
+        if (notificationEnabled && (!settings.systemNotificationOnlyWhenUnfocused || !focused)) {
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup("Codex GUI Notifications")
+                .createNotification(title, content, NotificationType.INFORMATION)
+                .notify(project);
+        }
+        if (soundEnabled && (!settings.soundOnlyWhenUnfocused || !focused)) playConfiguredSound(false);
     }
 
     private void toggleReasoning() {
@@ -762,6 +966,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("sandbox", settings.sandboxMode);
         state.addProperty("streamResponses", settings.streamResponses);
         state.addProperty("showReasoning", settings.showReasoning);
+        addBehaviorSettings(state, settings);
         state.addProperty("globalInstructions", settings.globalInstructions);
         state.addProperty("activePromptId", settings.activePromptId);
         state.add("prompts", promptsJson(settings.prompts));
@@ -826,16 +1031,145 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void publishMcpServers(boolean reload) {
-        var operation = reload
-            ? codex.reloadMcpServers().thenCompose(ignored -> codex.listMcpServers(currentThreadId))
-            : codex.listMcpServers(currentThreadId);
-        operation.thenAccept(result -> {
+        var operation = reload ? codex.reloadMcpServers() : CompletableFuture.completedFuture(new JsonObject());
+        operation.thenCompose(ignored -> {
+            var statuses = codex.listMcpServers(currentThreadId);
+            var config = codex.readConfig(project.getBasePath()).exceptionally(error -> new JsonObject());
+            return statuses.thenCombine(config, this::mergeMcpServers);
+        }).thenAccept(items -> {
             var event = event("mcpServers");
-            event.add("items", array(result, "data"));
+            event.add("items", items);
             sendEvent(event);
             if (reload) toast("MCP 配置已重新加载");
         }).exceptionally(error -> {
+            mcpLog("error", "", "读取 MCP 服务器失败：" + errorMessage(error));
             asyncError("无法读取 MCP 服务器", error);
+            return null;
+        });
+    }
+
+    private JsonArray mergeMcpServers(JsonObject statusResult, JsonObject configResult) {
+        Map<String, JsonObject> merged = new LinkedHashMap<>();
+        var configRoot = configResult.has("config") && configResult.get("config").isJsonObject()
+            ? configResult.getAsJsonObject("config")
+            : new JsonObject();
+        var configured = configRoot.has("mcp_servers") && configRoot.get("mcp_servers").isJsonObject()
+            ? configRoot.getAsJsonObject("mcp_servers")
+            : new JsonObject();
+
+        for (var entry : configured.entrySet()) {
+            if (!entry.getValue().isJsonObject()) continue;
+            var item = new JsonObject();
+            var serverConfig = entry.getValue().getAsJsonObject().deepCopy();
+            item.addProperty("name", entry.getKey());
+            item.add("config", serverConfig);
+            item.addProperty("enabled", !serverConfig.has("enabled") || serverConfig.get("enabled").getAsBoolean());
+            item.addProperty("connectionStatus", "failed");
+            item.add("tools", new JsonObject());
+            item.add("resources", new JsonArray());
+            item.add("resourceTemplates", new JsonArray());
+            merged.put(entry.getKey(), item);
+        }
+
+        for (var element : array(statusResult, "data")) {
+            if (!element.isJsonObject()) continue;
+            var status = element.getAsJsonObject();
+            var name = string(status, "name", "");
+            if (name.isBlank()) continue;
+            var item = merged.getOrDefault(name, new JsonObject());
+            for (var entry : status.entrySet()) item.add(entry.getKey(), entry.getValue().deepCopy());
+            item.addProperty("name", name);
+            if (!item.has("config")) {
+                item.add("config", new JsonObject());
+                item.addProperty("managed", true);
+            }
+            if (!item.has("enabled")) item.addProperty("enabled", true);
+            item.addProperty("connectionStatus", status.has("serverInfo") && status.get("serverInfo").isJsonObject() ? "connected" : "failed");
+            merged.put(name, item);
+        }
+
+        var result = new JsonArray();
+        merged.values().forEach(result::add);
+        return result;
+    }
+
+    private void saveMcpServer(JsonObject request) {
+        var name = string(request, "name", "").trim();
+        var originalName = string(request, "originalName", "").trim();
+        if (!validMcpName(name) || !request.has("config") || !request.get("config").isJsonObject()) {
+            toast("MCP 配置无效：名称仅支持字母、数字、下划线和连字符");
+            return;
+        }
+        var config = request.getAsJsonObject("config").deepCopy();
+        if (string(config, "command", "").isBlank() && string(config, "url", "").isBlank()) {
+            toast("MCP 配置必须包含 command 或 url");
+            return;
+        }
+        var operation = codex.writeConfigValue("mcp_servers." + name, config);
+        if (!originalName.isBlank() && !originalName.equals(name) && validMcpName(originalName)) {
+            operation = operation.thenCompose(ignored -> codex.writeConfigValue("mcp_servers." + originalName, JsonNull.INSTANCE));
+        }
+        operation.thenCompose(ignored -> codex.reloadMcpServers()).thenRun(() -> {
+            toast(originalName.isBlank() ? "MCP 服务器已添加" : "MCP 服务器配置已保存");
+            publishMcpServers(false);
+        }).exceptionally(error -> {
+            asyncError("无法保存 MCP 服务器", error);
+            return null;
+        });
+    }
+
+    private void deleteMcpServer(JsonObject request) {
+        var name = string(request, "name", "").trim();
+        if (!validMcpName(name)) return;
+        codex.writeConfigValue("mcp_servers." + name, JsonNull.INSTANCE)
+            .thenCompose(ignored -> codex.reloadMcpServers())
+            .thenRun(() -> {
+                toast("MCP 服务器已删除");
+                publishMcpServers(false);
+            }).exceptionally(error -> {
+                asyncError("无法删除 MCP 服务器", error);
+                return null;
+            });
+    }
+
+    private void setMcpServerEnabled(JsonObject request) {
+        var name = string(request, "name", "").trim();
+        if (!validMcpName(name) || !request.has("enabled")) return;
+        var enabled = request.get("enabled").getAsBoolean();
+        codex.writeConfigValue("mcp_servers." + name + ".enabled", new com.google.gson.JsonPrimitive(enabled))
+            .thenCompose(ignored -> codex.reloadMcpServers())
+            .thenRun(() -> {
+                toast(enabled ? "MCP 服务器已启用" : "MCP 服务器已停用");
+                publishMcpServers(false);
+            }).exceptionally(error -> {
+                asyncError("无法切换 MCP 服务器", error);
+                return null;
+            });
+    }
+
+    private boolean validMcpName(String name) {
+        return name.matches("[A-Za-z0-9_-]{1,64}");
+    }
+
+    private void copyText(JsonObject request) {
+        var text = string(request, "text", "");
+        if (text.isEmpty() || text.length() > 1_000_000) return;
+        CopyPasteManager.getInstance().setContents(new StringSelection(text));
+    }
+
+    private void loginMcpServer(JsonObject request) {
+        var name = string(request, "name", "").trim();
+        if (name.isBlank()) return;
+        codex.loginMcpServer(name, currentThreadId).thenAccept(result -> ApplicationManager.getApplication().invokeLater(() -> {
+            var authorizationUrl = string(result, "authorizationUrl", "");
+            if (authorizationUrl.isBlank()) {
+                toast("MCP 服务器未返回登录地址");
+                return;
+            }
+            BrowserUtil.browse(authorizationUrl);
+            toast("已在浏览器中打开 MCP 登录页面");
+        })).exceptionally(error -> {
+            asyncError("无法登录 MCP 服务器", error);
             return null;
         });
     }
@@ -941,6 +1275,41 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         sendEvent(event);
     }
 
+    private void addBehaviorSettings(JsonObject state, CodexSettingsState.StateData settings) {
+        state.addProperty("sendShortcut", settings.sendShortcut);
+        state.addProperty("permissionDialogTimeoutSeconds", settings.permissionDialogTimeoutSeconds);
+        state.addProperty("sendOpenedFilePath", settings.sendOpenedFilePath);
+        state.addProperty("diffExpandedByDefault", settings.diffExpandedByDefault);
+        state.addProperty("newSessionConfirmEnabled", settings.newSessionConfirmEnabled);
+        state.addProperty("askUserQuestionNotificationEnabled", settings.askUserQuestionNotificationEnabled);
+        state.addProperty("askUserQuestionSoundEnabled", settings.askUserQuestionSoundEnabled);
+        state.addProperty("taskCompletionNotificationEnabled", settings.taskCompletionNotificationEnabled);
+        state.addProperty("taskCompletionSoundEnabled", settings.taskCompletionSoundEnabled);
+        state.addProperty("systemNotificationOnlyWhenUnfocused", settings.systemNotificationOnlyWhenUnfocused);
+        state.addProperty("soundOnlyWhenUnfocused", settings.soundOnlyWhenUnfocused);
+        state.addProperty("notificationSound", settings.notificationSound);
+        state.addProperty("customSoundPath", settings.customSoundPath);
+        state.addProperty("activeFile", settings.sendOpenedFilePath ? openedFileContext() : "");
+        state.addProperty("usageUsedTokens", usageUsedTokens);
+        state.addProperty("usageMaxTokens", usageMaxTokens);
+        state.addProperty("usagePercentage", usageMaxTokens > 0
+            ? Math.min(100.0, usageUsedTokens * 100.0 / usageMaxTokens)
+            : 0.0);
+    }
+
+    private void mcpLog(String level, String serverName, String message) {
+        var event = event("mcpLog");
+        event.addProperty("level", level);
+        event.addProperty("serverName", serverName);
+        event.addProperty("message", message);
+        sendEvent(event);
+    }
+
+    private String errorMessage(Throwable throwable) {
+        var error = throwable instanceof CompletionException && throwable.getCause() != null ? throwable.getCause() : throwable;
+        return Objects.toString(error.getMessage(), error.toString());
+    }
+
     private JsonObject event(String type) {
         var event = new JsonObject();
         event.addProperty("type", type);
@@ -982,12 +1351,29 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "item/commandExecution/outputDelta" -> appendDelta(params, ConversationEntry.Kind.COMMAND, "命令");
             case "item/fileChange/outputDelta", "item/fileChange/patchUpdated" -> changeService.rescanAsync();
             case "turn/diff/updated" -> changeService.updateServerDiff(string(params, "diff", ""));
+            case "thread/tokenUsage/updated" -> publishTokenUsage(params);
+            case "skills/changed" -> publishSkills(false);
+            case "mcpServer/startupStatus/updated" -> {
+                var name = string(params, "name", string(params, "serverName", ""));
+                mcpLog("info", name, "服务器启动状态已更新，正在重新读取连接状态");
+                publishMcpServers(false);
+            }
+            case "mcpServer/oauthLogin/completed" -> {
+                var name = string(params, "name", string(params, "serverName", ""));
+                mcpLog("success", name, "OAuth 登录已完成，正在重新读取连接状态");
+                publishMcpServers(false);
+            }
             case "turn/completed" -> {
+                var completedActiveTurn = busy;
                 changeService.finishCaptureAsync();
                 currentTurnId = null;
                 pendingUserBody = null;
                 setBusy(false);
                 loadHistory("");
+                if (completedActiveTurn) {
+                    var settings = CodexSettingsState.getInstance().getState();
+                    notifyAttention("Codex 任务已完成", currentTitle, settings.taskCompletionNotificationEnabled, settings.taskCompletionSoundEnabled);
+                }
             }
             case "error" -> addEntry(new ConversationEntry(ConversationEntry.Kind.ERROR, "Codex 错误", params.toString(), null));
             case "warning", "configWarning", "deprecationNotice" -> addEntry(new ConversationEntry(ConversationEntry.Kind.NOTICE, "提示", string(params, "message", params.toString()), null));
@@ -1092,13 +1478,55 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void commandApproval(long requestId, JsonObject params) {
-        var choice = Messages.showDialog(project, "Codex 请求执行：\n\n" + string(params, "command", "未知命令"), "命令执行审批", new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"}, 0, Messages.getQuestionIcon());
+        var choice = showTimedDialog("Codex 请求执行：\n\n" + string(params, "command", "未知命令"), "命令执行审批", new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"});
         respondDecision(requestId, choice);
     }
 
+    private void publishTokenUsage(JsonObject params) {
+        var notificationThreadId = string(params, "threadId", "");
+        if (currentThreadId != null && !notificationThreadId.isBlank()
+            && !Objects.equals(currentThreadId, notificationThreadId)) return;
+        var tokenUsage = params != null && params.has("tokenUsage") && params.get("tokenUsage").isJsonObject()
+            ? params.getAsJsonObject("tokenUsage") : null;
+        var last = tokenUsage != null && tokenUsage.has("last") && tokenUsage.get("last").isJsonObject()
+            ? tokenUsage.getAsJsonObject("last") : null;
+        var used = longValue(last, "totalTokens");
+        var maximum = longValue(tokenUsage, "modelContextWindow");
+        if (used < 0 || maximum <= 0) return;
+
+        // Codex 的 last 是当前上下文快照；total 是会话累计值，不能用于上下文环。
+        usageUsedTokens = used;
+        usageMaxTokens = maximum;
+        var event = event("usage");
+        event.addProperty("usedTokens", used);
+        event.addProperty("maxTokens", maximum);
+        event.addProperty("percentage", Math.min(100.0, used * 100.0 / maximum));
+        sendEvent(event);
+    }
+
     private void fileApproval(long requestId, JsonObject params) {
-        var choice = Messages.showDialog(project, string(params, "reason", "Codex 请求修改工作区文件"), "文件修改审批", new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"}, 0, Messages.getQuestionIcon());
+        var choice = showTimedDialog(string(params, "reason", "Codex 请求修改工作区文件"), "文件修改审批", new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"});
         respondDecision(requestId, choice);
+    }
+
+    private int showTimedDialog(String message, String title, String[] options) {
+        var projectFrame = WindowManager.getInstance().getFrame(project);
+        // Swing modal dialogs keep processing timer events, so the timeout can safely close only this project's matching approval window.
+        var timer = new Timer(CodexSettingsState.getInstance().getState().permissionDialogTimeoutSeconds * 1000, event -> {
+            for (var window : Window.getWindows()) {
+                if (!(window instanceof Dialog dialog) || !dialog.isShowing() || !Objects.equals(dialog.getTitle(), title)) continue;
+                var owner = dialog.getOwner();
+                while (owner != null && owner != projectFrame) owner = owner.getOwner();
+                if (projectFrame == null || owner == projectFrame) dialog.dispose();
+            }
+        });
+        timer.setRepeats(false);
+        timer.start();
+        try {
+            return Messages.showDialog(project, message, title, options, 0, Messages.getQuestionIcon());
+        } finally {
+            timer.stop();
+        }
     }
 
     private void respondDecision(long requestId, int choice) {
@@ -1118,6 +1546,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         event.addProperty("requestId", requestId);
         event.add("questions", array(params, "questions"));
         sendEvent(event);
+        var settings = CodexSettingsState.getInstance().getState();
+        notifyAttention("Codex 有一些问题想问你", currentTitle, settings.askUserQuestionNotificationEnabled, settings.askUserQuestionSoundEnabled);
     }
 
     private void answerQuestions(JsonObject request, boolean cancelled) {
@@ -1131,7 +1561,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void permissionsApproval(long requestId, JsonObject params) {
-        var approved = Messages.showYesNoDialog(project, string(params, "reason", "Codex 请求临时提升权限"), "权限审批", "允许", "拒绝", Messages.getQuestionIcon()) == Messages.YES;
+        var approved = showTimedDialog(string(params, "reason", "Codex 请求临时提升权限"), "权限审批", new String[]{"允许", "拒绝"}) == Messages.YES;
         var result = new JsonObject();
         result.add("permissions", approved && params.has("permissions") ? params.getAsJsonObject("permissions") : new JsonObject());
         result.addProperty("scope", "turn");
@@ -1168,6 +1598,14 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             return object.get(field).getAsInt();
         } catch (RuntimeException ignored) {
             return -1;
+        }
+    }
+
+    private boolean bool(JsonObject object, String field, boolean fallback) {
+        try {
+            return object.get(field).getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return fallback;
         }
     }
 
@@ -1211,9 +1649,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     public void dispose() {
         codex.removeListener(this);
         changeService.removeListener(changeListener);
+        notificationSoundPlayer.close();
         if (bridge != null) bridge.dispose();
         if (browser != null) browser.dispose();
     }
 
-    private record SkillChoice(String name, Path path, String description) {}
 }

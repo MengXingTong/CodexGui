@@ -82,9 +82,10 @@ public final class CodexAppServerService implements Disposable {
     }
 
     private void startBlocking() {
+        var state = CodexSettingsState.getInstance().getState();
+        var configuredExecutable = state.codexExecutable.isBlank() ? "codex" : state.codexExecutable;
+        var executable = CodexExecutableResolver.resolve(configuredExecutable, SystemInfo.isWindows);
         try {
-            var state = CodexSettingsState.getInstance().getState();
-            var executable = state.codexExecutable.isBlank() ? "codex" : state.codexExecutable;
             var command = createCommand(executable);
             var builder = new ProcessBuilder(command);
             if (project.getBasePath() != null) builder.directory(Path.of(project.getBasePath()).toFile());
@@ -111,10 +112,23 @@ public final class CodexAppServerService implements Disposable {
             connected = true;
             fireConnectionChanged(true, "Codex CLI 已连接");
         } catch (Exception error) {
+            var message = startupFailureMessage(executable, error);
+            LOG.warn(message, error);
             stopProcess("Codex CLI 启动失败");
-            fireProtocolError("无法启动 Codex CLI：" + error.getMessage(), error);
-            throw new IllegalStateException("Unable to start Codex app-server", error);
+            throw new IllegalStateException(message, error);
         }
+    }
+
+    private String startupFailureMessage(String executable, Exception error) {
+        Throwable cause = error;
+        while (cause.getCause() != null && (cause instanceof java.util.concurrent.ExecutionException
+            || cause instanceof java.util.concurrent.CompletionException)) {
+            cause = cause.getCause();
+        }
+        var detail = cause.getMessage();
+        if (detail == null || detail.isBlank()) detail = cause.getClass().getSimpleName();
+        return "无法启动 Codex CLI（" + executable + "）：" + detail
+            + "。请安装 OpenAI Codex CLI，或在“设置 → 工具 → Codex GUI”中指定可执行文件。";
     }
 
     private List<String> createCommand(String executable) {
@@ -145,19 +159,18 @@ public final class CodexAppServerService implements Disposable {
         return request("model/list", params);
     }
 
-    public CompletableFuture<JsonObject> listSkills() {
+    public CompletableFuture<JsonObject> listSkills(boolean forceReload) {
         var params = new JsonObject();
         var roots = new JsonArray();
         if (project.getBasePath() != null) roots.add(project.getBasePath());
         params.add("cwds", roots);
-        params.addProperty("forceReload", false);
+        params.addProperty("forceReload", forceReload);
         return request("skills/list", params);
     }
 
-    public CompletableFuture<JsonObject> setSkillEnabled(String name, String path, boolean enabled) {
+    public CompletableFuture<JsonObject> setSkillEnabled(String path, boolean enabled) {
         var params = new JsonObject();
         params.addProperty("enabled", enabled);
-        if (name != null && !name.isBlank()) params.addProperty("name", name);
         if (path != null && !path.isBlank()) params.addProperty("path", path);
         return request("skills/config/write", params);
     }
@@ -254,6 +267,28 @@ public final class CodexAppServerService implements Disposable {
         return request("config/mcpServer/reload", new JsonObject());
     }
 
+    public CompletableFuture<JsonObject> readConfig(String cwd) {
+        var params = new JsonObject();
+        if (cwd != null && !cwd.isBlank()) params.addProperty("cwd", cwd);
+        params.addProperty("includeLayers", false);
+        return request("config/read", params);
+    }
+
+    public CompletableFuture<JsonObject> writeConfigValue(String keyPath, JsonElement value) {
+        var params = new JsonObject();
+        params.addProperty("keyPath", keyPath);
+        params.add("value", value == null ? com.google.gson.JsonNull.INSTANCE : value);
+        params.addProperty("mergeStrategy", "replace");
+        return request("config/value/write", params);
+    }
+
+    public CompletableFuture<JsonObject> loginMcpServer(String name, String threadId) {
+        var params = new JsonObject();
+        params.addProperty("name", name);
+        if (threadId != null && !threadId.isBlank()) params.addProperty("threadId", threadId);
+        return request("mcpServer/oauth/login", params);
+    }
+
     public CompletableFuture<JsonObject> startTurn(
         String threadId,
         String text,
@@ -305,11 +340,6 @@ public final class CodexAppServerService implements Disposable {
         switch (attachment.kind()) {
             case IMAGE -> {
                 input.addProperty("type", "localImage");
-                input.addProperty("path", attachment.path().toAbsolutePath().toString());
-            }
-            case SKILL -> {
-                input.addProperty("type", "skill");
-                input.addProperty("name", attachment.name());
                 input.addProperty("path", attachment.path().toAbsolutePath().toString());
             }
             case FILE -> {

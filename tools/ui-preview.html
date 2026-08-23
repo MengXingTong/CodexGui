@@ -44,6 +44,20 @@
         previewState.fileReferences.splice(message.index, 1);
         CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
       }
+      if (message.action === 'addFileReferences') {
+        message.paths.forEach(path => {
+          const existing = previewState.fileReferences.find(item => item.path === path);
+          if (existing) previewState.fileReferences.push({...existing});
+        });
+        CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
+      }
+      if (message.action === 'reorderFileReferences') {
+        const remaining = [...previewState.fileReferences];
+        previewState.fileReferences = message.paths.map(path => {
+          const index = remaining.findIndex(item => item.path === path);
+          return index < 0 ? null : remaining.splice(index, 1)[0];
+        }).filter(Boolean);
+      }
       if (message.action === 'listProjectFiles') {
         const query = String(message.query || '').toLowerCase();
         const items = previewFiles.filter(item => !query || item.path.toLowerCase().includes(query) || item.name.toLowerCase().includes(query));

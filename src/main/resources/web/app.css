@@ -66,6 +66,18 @@ button { color: inherit; }
 .session-wrap:hover .title-edit { opacity: 1; }
 .back { width: auto; padding: 0 7px; gap: 5px; }
 .back span { font-size: 12px; }
+.session-tabs { min-width: 0; min-height: 36px; flex: 0 0 auto; display: flex; align-items: stretch; gap: 2px; overflow-x: auto; overflow-y: hidden; padding: 0 8px; background: var(--bar); border-bottom: 1px solid var(--border); }
+.session-tab { position: relative; min-width: 104px; max-width: 220px; height: 36px; display: inline-flex; align-items: center; gap: 7px; padding: 0 8px 0 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; }
+.session-tab:hover { background: var(--hover); color: var(--text); }
+.session-tab.active { color: var(--text-strong); border-bottom-color: var(--accent); background: var(--active); }
+.session-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.session-tab-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px rgba(0,127,212,.18); }
+.session-tab-close { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 4px; color: var(--muted); }
+.session-tab-close:hover { background: var(--hover); color: var(--text-strong); }
+.session-tab-close svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.session-tab-add { width: 32px; height: 32px; align-self: center; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.session-tab-add:hover { background: var(--hover); color: var(--text-strong); }
+.session-tab-add svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 
 .chat-page { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .messages-shell { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -144,7 +156,8 @@ button { color: inherit; }
 .input-area { flex: 0 0 auto; padding: 9px 8px 8px; border-top: 1px solid var(--raised); background: var(--bg); }
 .composer { position: relative; display: flex; flex-direction: column; overflow: visible; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg); transition: border-color .15s, box-shadow .15s; }
 .composer:hover, .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.drop-overlay { position: absolute; z-index: 50; inset: 0; display: none; align-items: center; justify-content: center; gap: 8px; border-radius: 7px; background: rgba(0,127,212,.92); color: white; font-size: 13px; font-weight: 600; pointer-events: none; }
+.drop-overlay { position: absolute; z-index: 50; inset: 0; display: none; align-items: flex-start; justify-content: flex-end; gap: 5px; padding: 7px; border: 1px dashed var(--accent); border-radius: 7px; background: rgba(0,127,212,.1); color: white; font-size: 12px; font-weight: 600; pointer-events: none; }
+.drop-overlay > span { padding: 3px 6px; border-radius: 4px; background: rgba(0,127,212,.92); }
 .drop-overlay svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .composer.drag-active .drop-overlay { display: flex; }
 .composer-grip { position: absolute; z-index: 10; top: -20px; left: 50%; width: 112px; height: 14px; transform: translateX(-50%); cursor: ns-resize; touch-action: none; user-select: none; }
@@ -167,9 +180,13 @@ button { color: inherit; }
 .token-indicator:hover .token-tooltip { opacity: 1; visibility: visible; }
 .context-item { position: relative; width: max-content; min-width: 0; max-width: min(520px, 58vw, calc(100% - 126px)); flex: 0 1 auto; display: flex; align-items: center; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; }
 .context-item > svg { width: 16px; height: 16px; flex: 0 0 auto; margin-right: 4px; fill: none; stroke: currentColor; stroke-width: 1.7; }
-.agent-context-item { max-width: min(180px,32vw); flex: 0 1 auto; color: #b7d8ea; }
+.agent-context-shell { position: relative; min-width: 0; max-width: min(180px,32vw); flex: 0 1 auto; }
+.agent-context-item { width: 100%; max-width: none; border: 1px solid var(--border-strong); outline: 0; color: #b7d8ea; cursor: pointer; font: inherit; }
+.agent-context-item:hover, .agent-context-item.active { border-color: #168bd2; background: var(--hover); }
 .agent-context-item > svg { color: #8fc7e8; }
+.agent-context-item > svg:last-of-type { width: 11px; height: 11px; margin: 0 0 0 2px; color: currentColor; }
 .agent-context-item .context-text { max-width: 150px; }
+.agent-context-item.active .context-full-tooltip { display: none; }
 .context-text { min-width: 0; max-width: 100%; margin: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-item > button { flex: 0 0 auto; padding: 0; border: 0; background: transparent; color: #888; cursor: pointer; font-size: 14px; line-height: 1; }
 .context-full-tooltip { position: absolute; z-index: 1002; bottom: calc(100% + 7px); left: 0; width: max-content; max-width: min(620px, calc(100vw - 140px)); padding: 6px 8px; border: 1px solid #454545; border-radius: 6px; background: #252526; color: var(--text); box-shadow: 0 4px 12px rgba(0,0,0,.3); font: 11px/1.45 var(--code-font); overflow-wrap: anywhere; white-space: normal; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s, visibility .15s; }
@@ -191,7 +208,7 @@ button { color: inherit; }
 .attachment-name { max-width: 100%; margin-top: 2px; overflow: hidden; color: #666; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-remove { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: rgba(0,0,0,.7); color: white; cursor: pointer; opacity: 0; font-size: 10px; }
 .attachment-item:hover .attachment-remove { opacity: 1; }
-.file-reference-chip { position: relative; max-width: min(260px, calc(100% - 4px)); height: 26px; display: inline-flex; align-items: center; gap: 4px; margin: 0 4px 4px 0; padding: 1px 4px 1px 6px; vertical-align: middle; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: none; }
+.file-reference-chip { position: relative; max-width: min(260px, calc(100% - 4px)); height: 26px; display: inline-flex; align-items: center; gap: 4px; margin: 0 4px 4px 0; padding: 1px 4px 1px 6px; vertical-align: middle; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: all; }
 .file-reference-icon { width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; color: #4fc3f7; }
 .file-reference-chip.directory .file-reference-icon { color: #d7ba7d; }
 .file-reference-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -291,16 +308,16 @@ button { color: inherit; }
 .selector-button[data-menu="serviceTier"] { color: #b5b5b5; }
 .selector-button[data-menu="serviceTier"] svg:first-child { color: #9f9f9f; }
 
-/* 审批策略需要同时展示风险和自动化程度，使用带说明的宽菜单。 */
-.approval-menu { width: 360px; padding: 4px 0; }
-.approval-option { width: 100%; min-height: 59px; display: flex; align-items: center; gap: 10px; padding: 7px 13px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+/* 审批策略保留两行说明，同时使用适合工具窗的紧凑密度。 */
+.approval-menu { width: 320px; padding: 3px 0; }
+.approval-option { width: 100%; min-height: 45px; display: flex; align-items: center; gap: 8px; padding: 5px 10px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .approval-option:hover { background: #353535; }
 .approval-option.selected { background: #07537f; }
-.approval-icon { width: 22px; flex: 0 0 auto; display: grid; place-items: center; }
-.approval-icon svg, .approval-option > svg { width: 17px; height: 17px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.approval-icon { width: 18px; flex: 0 0 auto; display: grid; place-items: center; }
+.approval-icon svg, .approval-option > svg { width: 15px; height: 15px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .approval-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
-.approval-copy b { color: #e2e2e2; font-size: 13px; font-weight: 500; }
-.approval-copy small { overflow: hidden; color: #999; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.approval-copy b { color: #e2e2e2; font-size: 12px; line-height: 1.35; font-weight: 500; }
+.approval-copy small { overflow: hidden; color: #999; font-size: 10px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
 .approval-option.selected .approval-copy small { color: #b7d8ea; }
 
 /* 聊天设置浮层与截图保持同一方向、密度和分组。 */
@@ -315,8 +332,8 @@ button { color: inherit; }
 .config-copy b { color: #d7d7d7; font-size: 13px; font-weight: 500; }
 .config-copy small { overflow: hidden; color: #8f8f8f; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
 .menu-divider { height: 1px; margin: 0; background: #454545; }
-.composer-submenu { position: absolute; left: calc(100% + 6px); top: 0; width: min(450px,calc(100vw - 304px)); min-width: 300px; max-height: 330px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #454545; border-radius: 8px; background: #252525; box-shadow: 0 8px 28px rgba(0,0,0,.42); }
-.submenu-list { min-height: 0; overflow-y: auto; padding: 4px 0; }
+.agent-context-menu { position: absolute; z-index: 80; left: 0; bottom: calc(100% + 6px); width: min(340px,calc(100vw - 32px)); min-width: 260px; max-height: 250px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #454545; border-radius: 8px; background: #252525; box-shadow: 0 8px 28px rgba(0,0,0,.42); }
+.submenu-list { min-height: 0; display: block; overflow-y: auto; padding: 4px 0; }
 .submenu-option, .submenu-create { width: 100%; min-height: 55px; display: flex; align-items: center; gap: 10px; padding: 7px 13px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .submenu-option:hover, .submenu-create:hover { background: #353535; }
 .submenu-option.selected { background: #07537f; }
@@ -327,20 +344,12 @@ button { color: inherit; }
 .submenu-create b { color: #ddd; font-size: 13px; font-weight: 500; }
 .submenu-create small { color: #8f8f8f; font-size: 11px; }
 .submenu-empty { padding: 25px 16px; color: var(--muted); text-align: center; }
-.process-status { min-height: 74px; display: flex; align-items: center; gap: 11px; padding: 12px 14px; }
-.process-status > span:last-child { display: flex; flex-direction: column; }
-.process-status b { color: var(--text-strong); font-weight: 500; }
-.process-status small { color: var(--muted); font-size: 11px; }
-.process-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--red); }
-.process-dot.online { background: var(--green); }
-
-/* Agent 选择只保留必要信息，避免长指令把主页浮层撑大。 */
-.composer-submenu.agents-submenu { width: min(340px,calc(100vw - 304px)); min-width: 260px; max-height: 250px; }
-.agents-submenu .submenu-option { min-height: 44px; gap: 8px; padding: 6px 10px; }
-.agents-submenu .submenu-option .config-icon { width: 18px; height: 18px; }
-.agents-submenu .config-copy b { font-size: 12px; }
-.agents-submenu .config-copy small { font-size: 10px; }
-.agents-submenu .submenu-create { min-height: 42px; padding: 6px 10px; }
+/* Agent 选择直接附着在身份标签上，避免与聊天设置重复。 */
+.agent-context-menu .submenu-option { min-height: 44px; gap: 8px; padding: 6px 10px; }
+.agent-context-menu .submenu-option .config-icon { width: 18px; height: 18px; }
+.agent-context-menu .config-copy b { font-size: 12px; }
+.agent-context-menu .config-copy small { font-size: 10px; }
+.agent-context-menu .submenu-create { min-height: 42px; padding: 6px 10px; }
 
 /* 设置页面：固定窄侧栏 + 单一内容区。 */
 .settings-page { min-height: 0; flex: 1; display: flex; overflow: hidden; background: var(--bg); }
@@ -454,7 +463,7 @@ button { color: inherit; }
 [data-theme="light"] .selector-button { color: #555; }
 [data-theme="light"] .selector-menu,
 [data-theme="light"] .composer-menu,
-[data-theme="light"] .composer-submenu { border-color: #c9c9c9; background: #ffffff; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+[data-theme="light"] .agent-context-menu { border-color: #c9c9c9; background: #ffffff; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
 [data-theme="light"] .selector-option:hover,
 [data-theme="light"] .config-row:hover,
 [data-theme="light"] .submenu-option:hover { background: #ededed; }
@@ -840,8 +849,8 @@ button.agent-card, button.prompt-card { width: 100%; cursor: pointer; }
   .switch { justify-self: start; }
   .selector-button-text { max-width: 58px; }
   .toolbar-left .selector-shell:nth-of-type(n+4) .selector-button-text { display: none; }
-  .composer-submenu { left: 0; top: auto; bottom: calc(100% + 6px); width: min(390px,calc(100vw - 18px)); min-width: 0; }
-  .approval-menu { width: min(360px,calc(100vw - 18px)); }
+  .agent-context-menu { width: min(340px,calc(100vw - 18px)); min-width: 0; }
+  .approval-menu { width: min(320px,calc(100vw - 18px)); }
   .integration-toolbar { align-items: stretch; }
   .search-shell { flex-basis: 100%; }
   .filter-group { width: max-content; max-width: 100%; }

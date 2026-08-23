@@ -83,9 +83,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private final CodexAppServerService codex;
     private final WorkspaceChangeService changeService;
     private final NotificationSoundPlayer notificationSoundPlayer = new NotificationSoundPlayer();
-    private final List<Attachment> attachments = new ArrayList<>();
-    private final List<FileReference> fileReferences = new ArrayList<>();
-    private final List<ConversationEntry> transcript = new ArrayList<>();
+    private List<Attachment> attachments = new ArrayList<>();
+    private List<FileReference> fileReferences = new ArrayList<>();
+    private List<ConversationEntry> transcript = new ArrayList<>();
     private final Consumer<List<ChangeEntry>> changeListener;
     private final JBCefBrowser browser;
     private final JBCefJSQuery bridge;
@@ -98,6 +98,23 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private boolean pageReady;
     private long usageUsedTokens;
     private long usageMaxTokens;
+    private static final class SessionState {
+        private String threadId;
+        private String turnId;
+        private String title = "新会话";
+        private String pendingUserBody;
+        private boolean busy;
+        private long usageUsedTokens;
+        private long usageMaxTokens;
+        private List<Attachment> attachments = new ArrayList<>();
+        private List<FileReference> fileReferences = new ArrayList<>();
+        private List<ConversationEntry> transcript = new ArrayList<>();
+
+        private SessionState(String ignored) {}
+    }
+
+    private final Map<String, SessionState> sessions = new LinkedHashMap<>();
+    private String activeSessionId = "default";
     private volatile List<Path> pendingDraggedPaths = List.of();
     private volatile ComposerDropRegion composerDropRegion;
     private volatile boolean nativeDragActive;
@@ -109,6 +126,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         this.project = project;
         this.codex = CodexAppServerService.getInstance(project);
         this.changeService = WorkspaceChangeService.getInstance(project);
+        sessions.put(activeSessionId, new SessionState(activeSessionId));
         this.changeListener = this::publishChanges;
 
         if (!JBCefApp.isSupported()) {
@@ -194,6 +212,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
         var action = string(request, "action", "");
         ApplicationManager.getApplication().invokeLater(() -> {
+            activateSession(string(request, "sessionId", activeSessionId));
             switch (action) {
                 case "ready" -> bootstrap();
                 case "reconnect" -> codex.restart().thenRun(this::loadModels).exceptionally(error -> {
@@ -203,6 +222,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "send" -> sendInput(string(request, "text", ""));
                 case "stop" -> interruptCurrentTurn();
                 case "new" -> newConversation();
+                case "activateSession" -> publishCurrentSession();
                 case "history" -> loadHistory(string(request, "search", ""));
                 case "openThread" -> openThread(string(request, "id", ""));
                 case "rename" -> renameCurrentThread();
@@ -220,6 +240,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 );
                 case "removeAttachment" -> removeAttachment(integer(request, "index"));
                 case "removeFileReference" -> removeFileReference(integer(request, "index"));
+                case "addFileReferences" -> addFileReferences(request);
+                case "reorderFileReferences" -> reorderFileReferences(request);
                 case "acceptChange" -> acceptChange(integer(request, "index"));
                 case "revertChange" -> revertChange(integer(request, "index"));
                 case "acceptAll" -> acceptAllChanges();
@@ -272,6 +294,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var settings = CodexSettingsState.getInstance().getState();
         var state = new JsonObject();
         state.addProperty("connected", codex.isConnected());
+        state.addProperty("sessionId", activeSessionId);
         state.addProperty("busy", busy);
         state.addProperty("title", currentTitle);
         if (currentThreadId != null) state.addProperty("threadId", currentThreadId);
@@ -301,7 +324,61 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         loadModels();
     }
 
+    private SessionState activeSession() { return sessions.get(activeSessionId); }
+
+    private void saveActiveSession() {
+        var session = activeSession();
+        if (session == null) return;
+        session.threadId = currentThreadId;
+        session.turnId = currentTurnId;
+        session.title = currentTitle;
+        session.pendingUserBody = pendingUserBody;
+        session.busy = busy;
+        session.usageUsedTokens = usageUsedTokens;
+        session.usageMaxTokens = usageMaxTokens;
+        session.attachments = attachments;
+        session.fileReferences = fileReferences;
+        session.transcript = transcript;
+    }
+
+    private void activateSession(String sessionId) {
+        var id = sessionId == null || sessionId.isBlank() ? "default" : sessionId;
+        if (Objects.equals(activeSessionId, id) && activeSession() != null) return;
+        saveActiveSession();
+        var session = sessions.computeIfAbsent(id, SessionState::new);
+        activeSessionId = id;
+        currentThreadId = session.threadId;
+        currentTurnId = session.turnId;
+        currentTitle = session.title;
+        pendingUserBody = session.pendingUserBody;
+        busy = session.busy;
+        usageUsedTokens = session.usageUsedTokens;
+        usageMaxTokens = session.usageMaxTokens;
+        attachments = session.attachments;
+        fileReferences = session.fileReferences;
+        transcript = session.transcript;
+    }
+
+    private void publishCurrentSession() {
+        var event = event("clear");
+        event.addProperty("title", currentTitle);
+        if (currentThreadId != null) event.addProperty("threadId", currentThreadId);
+        sendEvent(event);
+        transcript.forEach(this::publishEntry);
+        publishAttachments();
+        publishFileReferences();
+        publishChanges(changeService.getChanges());
+        publishThread();
+        var usage = event("usage");
+        usage.addProperty("usedTokens", usageUsedTokens);
+        usage.addProperty("maxTokens", usageMaxTokens);
+        usage.addProperty("percentage", usageMaxTokens > 0 ? Math.min(100.0, usageUsedTokens * 100.0 / usageMaxTokens) : 0.0);
+        sendEvent(usage);
+        setBusy(busy);
+    }
+
     private void sendInput(String text) {
+        var sessionId = activeSessionId;
         text = text.trim();
         if (busy || text.isBlank() && attachments.isEmpty() && fileReferences.isEmpty()) return;
         if (!codex.isConnected()) {
@@ -344,7 +421,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 developerInstructions()
             )
                 .thenApply(result -> {
+                    activateSession(sessionId);
                     currentThreadId = result.getAsJsonObject("thread").get("id").getAsString();
+                    saveActiveSession();
                     publishThread();
                     return currentThreadId;
                 })
@@ -354,10 +433,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             settings.serviceTier,
             settings.approvalPolicy, settings.sandboxMode
         )).thenAccept(result -> {
+            activateSession(sessionId);
             var turn = result.getAsJsonObject("turn");
             if (turn != null && turn.has("id")) currentTurnId = turn.get("id").getAsString();
+            saveActiveSession();
         }).exceptionally(error -> {
             changeService.finishCaptureAsync();
+            activateSession(sessionId);
             setBusy(false);
             asyncError("无法发送消息", error);
             return null;
@@ -432,7 +514,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void openThread(String threadId) {
         if (busy || threadId.isBlank() || Objects.equals(currentThreadId, threadId)) return;
-        codex.resumeThread(threadId).thenAccept(this::renderThread).exceptionally(error -> {
+        var sessionId = activeSessionId;
+        codex.resumeThread(threadId).thenAccept(result -> {
+            activateSession(sessionId);
+            renderThread(result);
+        }).exceptionally(error -> {
+            activateSession(sessionId);
             asyncError("无法打开历史会话", error);
             return null;
         });
@@ -480,11 +567,14 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (currentThreadId == null) return;
         var name = Messages.showInputDialog(project, "输入新的会话名称：", "重命名会话", Messages.getQuestionIcon(), currentTitle, null);
         if (name == null || name.isBlank()) return;
+        var sessionId = activeSessionId;
         currentTitle = name.trim();
         codex.setThreadName(currentThreadId, currentTitle).thenRun(() -> {
+            activateSession(sessionId);
             publishThread();
             loadHistory("");
         }).exceptionally(error -> {
+            activateSession(sessionId);
             asyncError("无法重命名会话", error);
             return null;
         });
@@ -822,6 +912,42 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (index < 0 || index >= fileReferences.size()) return;
         fileReferences.remove(index);
         publishFileReferences();
+    }
+
+    private void addFileReferences(JsonObject request) {
+        var paths = request.getAsJsonArray("paths");
+        if (paths == null) return;
+        var added = 0;
+        for (var value : paths) {
+            var path = droppedPath(value.getAsString());
+            if (path == null || (!Files.isRegularFile(path) && !Files.isDirectory(path))) continue;
+            fileReferences.add(FileReference.fromPath(path.toAbsolutePath().normalize()));
+            added++;
+        }
+        if (added > 0) publishFileReferences();
+    }
+
+    private void reorderFileReferences(JsonObject request) {
+        var paths = request.getAsJsonArray("paths");
+        if (paths == null || paths.size() != fileReferences.size()) return;
+        var remaining = new ArrayList<>(fileReferences);
+        var ordered = new ArrayList<FileReference>();
+        for (var value : paths) {
+            var path = droppedPath(value.getAsString());
+            if (path == null) return;
+            path = path.toAbsolutePath().normalize();
+            var index = -1;
+            for (var i = 0; i < remaining.size(); i++) {
+                if (remaining.get(i).path().equals(path)) {
+                    index = i;
+                    break;
+                }
+            }
+            if (index < 0) return;
+            ordered.add(remaining.remove(index));
+        }
+        fileReferences.clear();
+        fileReferences.addAll(ordered);
     }
 
     private JsonArray attachmentsJson() {
@@ -1222,7 +1348,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void compactCurrentThread() {
         if (currentThreadId == null || busy) return;
-        codex.compactThread(currentThreadId).thenRun(() -> toast("上下文压缩完成")).exceptionally(error -> {
+        var sessionId = activeSessionId;
+        codex.compactThread(currentThreadId).thenRun(() -> {
+            activateSession(sessionId);
+            toast("上下文压缩完成");
+        }).exceptionally(error -> {
+            activateSession(sessionId);
             asyncError("无法压缩上下文", error);
             return null;
         });
@@ -1233,11 +1364,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             toast("请先创建或打开一个会话");
             return;
         }
+        var sessionId = activeSessionId;
         setBusy(true);
         codex.reviewUncommittedChanges(currentThreadId).thenAccept(result -> {
+            activateSession(sessionId);
             var turn = result.getAsJsonObject("turn");
             if (turn != null) currentTurnId = string(turn, "id", null);
+            saveActiveSession();
         }).exceptionally(error -> {
+            activateSession(sessionId);
             setBusy(false);
             asyncError("无法启动代码审查", error);
             return null;
@@ -1247,7 +1382,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void rollbackLastTurn() {
         if (currentThreadId == null || busy) return;
         if (Messages.showYesNoDialog(project, "回退上一轮会话？工作区文件仍由修改面板单独管理。", "回退上一轮", "回退", "取消", Messages.getWarningIcon()) != Messages.YES) return;
-        codex.rollbackThread(currentThreadId).thenAccept(this::renderThread).exceptionally(error -> {
+        var sessionId = activeSessionId;
+        codex.rollbackThread(currentThreadId).thenAccept(result -> {
+            activateSession(sessionId);
+            renderThread(result);
+        }).exceptionally(error -> {
+            activateSession(sessionId);
             asyncError("无法回退会话", error);
             return null;
         });
@@ -1255,7 +1395,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void interruptCurrentTurn() {
         if (currentThreadId == null || currentTurnId == null) return;
+        var sessionId = activeSessionId;
         codex.interruptTurn(currentThreadId, currentTurnId).exceptionally(error -> {
+            activateSession(sessionId);
             asyncError("无法停止当前回合", error);
             return null;
         });
@@ -1456,6 +1598,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void setBusy(boolean value) {
         busy = value;
+        saveActiveSession();
         var event = event("busy");
         event.addProperty("busy", value);
         sendEvent(event);
@@ -1505,6 +1648,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void publishThread() {
+        saveActiveSession();
         var event = event("thread");
         if (currentThreadId != null) event.addProperty("id", currentThreadId);
         event.addProperty("title", currentTitle);
@@ -1558,6 +1702,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private JsonObject event(String type) {
         var event = new JsonObject();
         event.addProperty("type", type);
+        event.addProperty("sessionId", activeSessionId);
         return event;
     }
 
@@ -1575,11 +1720,28 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         event.addProperty("connected", connected);
         event.addProperty("detail", detail);
         sendEvent(event);
-        if (connected) setBusy(false);
+        if (connected) {
+            var previousSessionId = activeSessionId;
+            for (var sessionId : List.copyOf(sessions.keySet())) {
+                activateSession(sessionId);
+                currentTurnId = null;
+                setBusy(false);
+            }
+            activateSession(previousSessionId);
+        }
     }
 
     @Override
     public void onNotification(String method, JsonObject params) {
+        var notificationThreadId = string(params, "threadId", "");
+        if (notificationThreadId.isBlank() && params != null) {
+            var turn = params.has("turn") && params.get("turn").isJsonObject() ? params.getAsJsonObject("turn") : null;
+            notificationThreadId = string(turn, "threadId", "");
+            if (notificationThreadId.isBlank() && params.has("item") && params.get("item").isJsonObject()) {
+                notificationThreadId = string(params.getAsJsonObject("item"), "threadId", "");
+            }
+        }
+        activateSessionForThread(notificationThreadId);
         switch (method) {
             case "turn/started" -> {
                 var turn = params.getAsJsonObject("turn");
@@ -1623,6 +1785,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "error" -> addEntry(new ConversationEntry(ConversationEntry.Kind.ERROR, "Codex 错误", params.toString(), null));
             case "warning", "configWarning", "deprecationNotice" -> addEntry(new ConversationEntry(ConversationEntry.Kind.NOTICE, "提示", string(params, "message", params.toString()), null));
             default -> {
+            }
+        }
+    }
+
+    private void activateSessionForThread(String threadId) {
+        if (threadId == null || threadId.isBlank()) return;
+        for (var entry : sessions.entrySet()) {
+            if (Objects.equals(entry.getValue().threadId, threadId)) {
+                activateSession(entry.getKey());
+                return;
             }
         }
     }
@@ -1687,6 +1859,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     @Override
     public void onServerRequest(long requestId, String method, JsonObject params) {
         ApplicationManager.getApplication().invokeLater(() -> {
+            activateSessionForThread(string(params, "threadId", ""));
             // “全自动”只自动处理审批请求，Codex 主动提问仍必须交给用户选择。
             if (Objects.equals(CodexSettingsState.getInstance().getState().approvalPolicy, "never")
                 && autoApprove(requestId, method, params)) return;

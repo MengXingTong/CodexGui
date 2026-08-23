@@ -25,6 +25,7 @@ import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 @Service(Service.Level.PROJECT)
@@ -39,11 +40,13 @@ public final class WorkspaceChangeService {
     private final Path root;
     private final CopyOnWriteArrayList<Consumer<List<ChangeEntry>>> listeners = new CopyOnWriteArrayList<>();
     private final AtomicBoolean scanRunning = new AtomicBoolean();
+    private final AtomicInteger activeCaptures = new AtomicInteger();
     private final Map<String, String> serverDiffs = new java.util.concurrent.ConcurrentHashMap<>();
 
     private volatile Map<Path, FileState> baseline = Map.of();
     private volatile List<ChangeEntry> changes = List.of();
     private volatile boolean captureActive;
+    private CompletableFuture<Void> captureInitialization = CompletableFuture.completedFuture(null);
 
     public WorkspaceChangeService(Project project) {
         this.project = project;
@@ -71,9 +74,10 @@ public final class WorkspaceChangeService {
         listeners.remove(listener);
     }
 
-    public CompletableFuture<Void> beginCaptureAsync() {
+    public synchronized CompletableFuture<Void> beginCaptureAsync() {
+        if (activeCaptures.incrementAndGet() > 1) return captureInitialization;
         captureActive = false;
-        return CompletableFuture.runAsync(() -> {
+        captureInitialization = CompletableFuture.runAsync(() -> {
             // 未处理修改跨回合保留；列表清空后才以当前工作区建立新基线。
             if (changes.isEmpty()) {
                 baseline = takeSnapshot();
@@ -83,6 +87,7 @@ public final class WorkspaceChangeService {
             }
             captureActive = true;
         }, AppExecutorUtil.getAppExecutorService());
+        return captureInitialization;
     }
 
     public void updateServerDiff(String unifiedDiff) {
@@ -104,6 +109,11 @@ public final class WorkspaceChangeService {
     }
 
     public CompletableFuture<Void> finishCaptureAsync() {
+        var remaining = activeCaptures.updateAndGet(value -> Math.max(0, value - 1));
+        if (remaining > 0) {
+            rescanAsync();
+            return CompletableFuture.completedFuture(null);
+        }
         if (!captureActive) return CompletableFuture.completedFuture(null);
         captureActive = false;
         return CompletableFuture.runAsync(() -> {

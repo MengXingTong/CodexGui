@@ -3,9 +3,11 @@ package com.codexgui.ui;
 import com.codexgui.model.Attachment;
 import com.codexgui.model.ChangeEntry;
 import com.codexgui.model.ConversationEntry;
+import com.codexgui.model.EditorFileContext;
 import com.codexgui.service.CodexAppServerService;
 import com.codexgui.service.CodexEventListener;
 import com.codexgui.service.NotificationSoundPlayer;
+import com.codexgui.service.ProjectFileSearch;
 import com.codexgui.service.WorkspaceChangeService;
 import com.codexgui.settings.CodexSettingsState;
 import com.codexgui.settings.CodexProjectSettingsState;
@@ -20,9 +22,16 @@ import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.ide.BrowserUtil;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
+import com.intellij.ide.dnd.DnDEvent;
+import com.intellij.ide.dnd.DnDSupport;
+import com.intellij.ide.dnd.FileCopyPasteUtil;
 import com.intellij.openapi.ide.CopyPasteManager;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.editor.EditorFactory;
+import com.intellij.openapi.editor.event.SelectionEvent;
+import com.intellij.openapi.editor.event.SelectionListener;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
 import com.intellij.openapi.fileEditor.FileEditorManagerEvent;
 import com.intellij.openapi.fileEditor.FileEditorManagerListener;
@@ -36,12 +45,14 @@ import com.intellij.ui.jcef.JBCefApp;
 import com.intellij.ui.jcef.JBCefBrowser;
 import com.intellij.ui.jcef.JBCefBrowserBase;
 import com.intellij.ui.jcef.JBCefJSQuery;
+import com.intellij.util.concurrency.AppExecutorUtil;
 
 import javax.swing.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -53,9 +64,11 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.function.Consumer;
@@ -63,6 +76,7 @@ import java.util.function.Consumer;
 final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEventListener {
     private static final Gson GSON = new Gson();
     private static final DateTimeFormatter HISTORY_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm");
+    private static final long PROJECT_FILE_CACHE_MILLIS = 2_000L;
 
     private final Project project;
     private final CodexAppServerService codex;
@@ -82,6 +96,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private boolean pageReady;
     private long usageUsedTokens;
     private long usageMaxTokens;
+    private volatile List<Path> pendingDraggedFiles = List.of();
+    private volatile ComposerDropRegion composerDropRegion;
+    private volatile boolean nativeDragActive;
+    private volatile List<ProjectFileSearch.Candidate> projectFileCatalog = List.of();
+    private volatile long projectFileCatalogLoadedAt;
 
     CodexToolWindowPanel(Project project) {
         super(new BorderLayout());
@@ -98,6 +117,18 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
 
         browser = new JBCefBrowser();
+        // CEF 提供本地绝对路径，页面 drop 事件再确认文件确实落在输入卡内。
+        browser.getJBCefClient().addDragHandler((cefBrowser, dragData, mask) -> {
+            var fileNames = new Vector<String>();
+            var paths = dragData.isFile() && dragData.getFileNames(fileNames)
+                ? fileNames.stream().map(this::droppedPath).filter(Objects::nonNull).toList()
+                : List.<Path>of();
+            if (paths.isEmpty() && dragData.isFragment()) paths = droppedTextPaths(dragData.getFragmentText());
+            pendingDraggedFiles = paths;
+            publishNativeDragState(!paths.isEmpty());
+            return false;
+        }, browser.getCefBrowser());
+        installProjectViewDropTarget();
         bridge = JBCefJSQuery.create((JBCefBrowserBase) browser);
         bridge.addHandler(payload -> {
             handleBridgeMessage(payload);
@@ -118,6 +149,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 }
             }
         );
+        EditorFactory.getInstance().getEventMulticaster().addSelectionListener(new SelectionListener() {
+            @Override
+            public void selectionChanged(SelectionEvent event) {
+                if (event.getEditor().getProject() == project) publishFileContext();
+            }
+        }, this);
         codex.start().thenRun(() -> {
             loadModels();
             loadHistory("");
@@ -170,6 +207,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "export" -> exportConversation();
                 case "pickFile" -> chooseAttachment(false);
                 case "pickImage" -> chooseAttachment(true);
+                case "dropFiles" -> addDroppedAttachments();
+                case "cancelDrop" -> {
+                    pendingDraggedFiles = List.of();
+                    publishNativeDragState(false);
+                }
+                case "composerBounds" -> updateComposerDropRegion(request);
+                case "listProjectFiles" -> publishProjectFiles(
+                    string(request, "query", ""), longValue(request, "requestId")
+                );
                 case "removeAttachment" -> removeAttachment(integer(request, "index"));
                 case "acceptChange" -> acceptChange(integer(request, "index"));
                 case "revertChange" -> revertChange(integer(request, "index"));
@@ -265,10 +311,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (attachments.isEmpty() && handleNativeCommand(text)) return;
 
         var settings = CodexSettingsState.getInstance().getState();
-        var openedFile = settings.sendOpenedFilePath ? openedFileContext() : "";
-        var inputText = openedFile.isBlank() ? text : text + "\n\n[当前打开文件路径] " + openedFile;
+        var editorContext = settings.sendOpenedFilePath ? currentEditorContext() : null;
+        var inputText = editorContext == null ? text : editorContext.appendTo(text);
         var sentAttachments = List.copyOf(attachments);
-        var display = new StringBuilder(inputText);
+        var display = new StringBuilder(text);
+        if (editorContext != null) display.append("\n\n[当前编辑器上下文] ").append(editorContext.displayLabel());
         sentAttachments.forEach(attachment -> display.append("\n").append(switch (attachment.kind()) {
             case IMAGE -> "[图片] ";
             case FILE -> "@";
@@ -469,6 +516,130 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var name = path.getFileName().toString().toLowerCase(Locale.ROOT);
         return name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg")
             || name.endsWith(".gif") || name.endsWith(".webp");
+    }
+
+    private Path droppedPath(String rawPath) {
+        try {
+            var value = Objects.requireNonNullElse(rawPath, "").trim();
+            if (value.startsWith("@")) value = value.substring(1).trim();
+            return value.startsWith("file:") ? Path.of(URI.create(value)) : Path.of(value);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private List<Path> droppedTextPaths(String text) {
+        if (text == null || text.isBlank()) return List.of();
+        return text.lines().map(this::droppedPath).filter(Objects::nonNull).toList();
+    }
+
+    private void installProjectViewDropTarget() {
+        // Project View 使用 IDE 内部 DnD 对象，通常不会进入 Chromium 的 Files 列表。
+        DnDSupport.createBuilder(browser.getComponent())
+            .disableAsSource()
+            .setTargetChecker(event -> {
+                var canDrop = isInsideComposer(event) && !nativeDroppedFiles(event).isEmpty();
+                event.setDropPossible(canDrop, canDrop ? "添加文件引用" : "请拖到聊天输入框");
+                publishNativeDragState(canDrop);
+                return true;
+            })
+            .setDropHandler(event -> {
+                publishNativeDragState(false);
+                addDroppedAttachments(nativeDroppedFiles(event));
+            })
+            .setCleanUpOnLeaveCallback(() -> publishNativeDragState(false))
+            .setDisposableParent(this)
+            .install();
+    }
+
+    private List<Path> nativeDroppedFiles(DnDEvent event) {
+        var paths = new LinkedHashSet<Path>();
+        for (var file : FileCopyPasteUtil.getFileListFromAttachedObject(event.getAttachedObject())) {
+            paths.add(file.toPath());
+        }
+        var transferred = FileCopyPasteUtil.getFiles(event);
+        if (transferred != null) paths.addAll(transferred);
+        return paths.stream().map(Path::toAbsolutePath).map(Path::normalize).filter(Files::isRegularFile).toList();
+    }
+
+    private boolean isInsideComposer(DnDEvent event) {
+        var region = composerDropRegion;
+        var component = browser.getComponent();
+        if (region == null || component.getWidth() <= 0 || component.getHeight() <= 0) return false;
+        var point = event.getPointOn(component);
+        var x = point.getX() / component.getWidth();
+        var y = point.getY() / component.getHeight();
+        return region.contains(x, y);
+    }
+
+    private void updateComposerDropRegion(JsonObject request) {
+        var left = doubleValue(request, "left");
+        var top = doubleValue(request, "top");
+        var right = doubleValue(request, "right");
+        var bottom = doubleValue(request, "bottom");
+        composerDropRegion = left >= 0 && top >= 0 && right > left && bottom > top
+            ? new ComposerDropRegion(left, top, right, bottom)
+            : null;
+    }
+
+    private void publishNativeDragState(boolean active) {
+        if (nativeDragActive == active) return;
+        nativeDragActive = active;
+        var event = event("nativeDrag");
+        event.addProperty("active", active);
+        sendEvent(event);
+    }
+
+    private void addDroppedAttachments() {
+        var droppedFiles = pendingDraggedFiles;
+        pendingDraggedFiles = List.of();
+        addDroppedAttachments(droppedFiles);
+    }
+
+    private void addDroppedAttachments(List<Path> droppedFiles) {
+        publishNativeDragState(false);
+        var added = 0;
+        for (var path : droppedFiles) {
+            var normalized = path.toAbsolutePath().normalize();
+            if (!Files.isRegularFile(normalized)) continue;
+            if (attachments.stream().anyMatch(item -> item.path().toAbsolutePath().normalize().equals(normalized))) continue;
+            var kind = isImageAttachment(normalized) ? Attachment.Kind.IMAGE : Attachment.Kind.FILE;
+            attachments.add(new Attachment(kind, normalized.getFileName().toString(), normalized));
+            added++;
+        }
+        if (added == 0) {
+            toast("未能读取拖入的文件");
+            return;
+        }
+        publishAttachments();
+        toast("已添加 " + added + " 个文件");
+    }
+
+    private void publishProjectFiles(String query, long requestId) {
+        CompletableFuture.supplyAsync(
+            () -> ProjectFileSearch.filter(projectFileCatalog(), query, 60),
+            AppExecutorUtil.getAppExecutorService()
+        ).thenAccept(files -> {
+            var event = event("projectFiles");
+            event.addProperty("requestId", requestId);
+            var items = new JsonArray();
+            for (var file : files) {
+                var item = new JsonObject();
+                item.addProperty("path", file.path());
+                item.addProperty("name", file.name());
+                items.add(item);
+            }
+            event.add("items", items);
+            sendEvent(event);
+        });
+    }
+
+    private synchronized List<ProjectFileSearch.Candidate> projectFileCatalog() {
+        var now = System.currentTimeMillis();
+        if (now - projectFileCatalogLoadedAt < PROJECT_FILE_CACHE_MILLIS) return projectFileCatalog;
+        projectFileCatalog = ProjectFileSearch.list(changeService.getRoot());
+        projectFileCatalogLoadedAt = now;
+        return projectFileCatalog;
     }
 
     private void publishSkills(boolean forceReload) {
@@ -729,7 +900,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "sendShortcut" -> settings.sendShortcut = Objects.equals(string(request, "value", "enter"), "cmdEnter") ? "cmdEnter" : "enter";
             case "permissionDialogTimeoutSeconds" -> settings.permissionDialogTimeoutSeconds = Math.max(30, Math.min(3600, integer(request, "value")));
             case "streamResponses" -> settings.streamResponses = bool(request, "value", true);
-            case "sendOpenedFilePath" -> settings.sendOpenedFilePath = bool(request, "value", true);
+            case "sendOpenedFilePath" -> settings.sendOpenedFilePath = bool(request, "value", false);
             case "diffExpandedByDefault" -> settings.diffExpandedByDefault = bool(request, "value", false);
             case "newSessionConfirmEnabled" -> settings.newSessionConfirmEnabled = bool(request, "value", true);
             case "askUserQuestionNotificationEnabled" -> settings.askUserQuestionNotificationEnabled = bool(request, "value", false);
@@ -750,23 +921,44 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         publishSettings();
     }
 
-    private String openedFileContext() {
+    private EditorFileContext currentEditorContext() {
         var selectedFiles = FileEditorManager.getInstance(project).getSelectedFiles();
-        if (selectedFiles.length == 0) return "";
+        if (selectedFiles.length == 0) return null;
+        var selectedFile = selectedFiles[0];
+        String displayPath;
         try {
-            var file = Path.of(selectedFiles[0].getPath()).toAbsolutePath().normalize();
+            var file = Path.of(selectedFile.getPath()).toAbsolutePath().normalize();
             var root = changeService.getRoot().toAbsolutePath().normalize();
-            return file.startsWith(root) ? root.relativize(file).toString() : file.toString();
+            displayPath = file.startsWith(root) ? root.relativize(file).toString() : file.toString();
         } catch (RuntimeException ignored) {
-            return selectedFiles[0].getPath();
+            displayPath = selectedFile.getPath();
         }
+
+        var editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
+        if (editor == null || FileDocumentManager.getInstance().getDocument(selectedFile) != editor.getDocument()) {
+            return new EditorFileContext(displayPath, 0, 0, "");
+        }
+        var selection = editor.getSelectionModel();
+        var selectedText = selection.getSelectedText();
+        if (selectedText == null || selectedText.isEmpty()) return new EditorFileContext(displayPath, 0, 0, "");
+        var document = editor.getDocument();
+        var startLine = document.getLineNumber(selection.getSelectionStart()) + 1;
+        var endOffset = Math.max(selection.getSelectionStart(), selection.getSelectionEnd() - 1);
+        var endLine = document.getLineNumber(endOffset) + 1;
+        return new EditorFileContext(displayPath, startLine, endLine, selectedText);
     }
 
     private void publishFileContext() {
         var settings = CodexSettingsState.getInstance().getState();
         var event = event("fileContext");
-        event.addProperty("path", settings.sendOpenedFilePath ? openedFileContext() : "");
+        addFileContext(event, settings.sendOpenedFilePath ? currentEditorContext() : null);
         sendEvent(event);
+    }
+
+    private void addFileContext(JsonObject target, EditorFileContext context) {
+        target.addProperty("path", context == null ? "" : context.path());
+        target.addProperty("startLine", context == null ? 0 : context.startLine());
+        target.addProperty("endLine", context == null ? 0 : context.endLine());
     }
 
     private void browseNotificationSound() {
@@ -1289,7 +1481,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("soundOnlyWhenUnfocused", settings.soundOnlyWhenUnfocused);
         state.addProperty("notificationSound", settings.notificationSound);
         state.addProperty("customSoundPath", settings.customSoundPath);
-        state.addProperty("activeFile", settings.sendOpenedFilePath ? openedFileContext() : "");
+        var context = settings.sendOpenedFilePath ? currentEditorContext() : null;
+        state.addProperty("activeFile", context == null ? "" : context.path());
+        state.addProperty("activeFileStartLine", context == null ? 0 : context.startLine());
+        state.addProperty("activeFileEndLine", context == null ? 0 : context.endLine());
         state.addProperty("usageUsedTokens", usageUsedTokens);
         state.addProperty("usageMaxTokens", usageMaxTokens);
         state.addProperty("usagePercentage", usageMaxTokens > 0
@@ -1614,6 +1809,20 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             return object.get(field).getAsLong();
         } catch (RuntimeException ignored) {
             return -1;
+        }
+    }
+
+    private double doubleValue(JsonObject object, String field) {
+        try {
+            return object.get(field).getAsDouble();
+        } catch (RuntimeException ignored) {
+            return -1;
+        }
+    }
+
+    private record ComposerDropRegion(double left, double top, double right, double bottom) {
+        private boolean contains(double x, double y) {
+            return x >= left && x <= right && y >= top && y <= bottom;
         }
     }
 

@@ -22,7 +22,7 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         public boolean showReasoning = true;
         public String sendShortcut = "enter";
         public int permissionDialogTimeoutSeconds = 300;
-        public boolean sendOpenedFilePath = true;
+        public boolean sendOpenedFilePath = false;
         public boolean diffExpandedByDefault = false;
         public boolean newSessionConfirmEnabled = true;
         public boolean askUserQuestionNotificationEnabled = false;

@@ -8,7 +8,8 @@
 <body>
   <div id="app"></div>
   <script>
-    const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',serviceTier:'standard',streamResponses:true,showReasoning:true,sendShortcut:'enter',permissionDialogTimeoutSeconds:300,sendOpenedFilePath:false,activeFile:'',usagePercentage:18.6,usageUsedTokens:48062,usageMaxTokens:258400,diffExpandedByDefault:false,newSessionConfirmEnabled:true,askUserQuestionNotificationEnabled:true,askUserQuestionSoundEnabled:true,taskCompletionNotificationEnabled:true,taskCompletionSoundEnabled:true,systemNotificationOnlyWhenUnfocused:false,soundOnlyWhenUnfocused:false,notificationSound:'chime',customSoundPath:'',globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['gpt-5.6-codex','gpt-5.4'],attachments:[]};
+    const previewContextEnabled = location.search.includes('context');
+    const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',serviceTier:'standard',streamResponses:true,showReasoning:true,sendShortcut:'enter',permissionDialogTimeoutSeconds:300,sendOpenedFilePath:previewContextEnabled,activeFile:previewContextEnabled?'src/main/java/com/codexgui/client/BoundaryDreamlandClientConnectionManager.java':'',activeFileStartLine:previewContextEnabled?128:0,activeFileEndLine:previewContextEnabled?146:0,usagePercentage:18.6,usageUsedTokens:48062,usageMaxTokens:258400,diffExpandedByDefault:false,newSessionConfirmEnabled:true,askUserQuestionNotificationEnabled:true,askUserQuestionSoundEnabled:true,taskCompletionNotificationEnabled:true,taskCompletionSoundEnabled:true,systemNotificationOnlyWhenUnfocused:false,soundOnlyWhenUnfocused:false,notificationSound:'chime',customSoundPath:'',globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['gpt-5.6-codex','gpt-5.4'],attachments:[]};
     const previewSkills = [
       {name:'browser',path:'C:\\Users\\demo\\.codex\\skills\\browser\\SKILL.md',description:'控制浏览器并检查本地 Web 界面。',enabled:true,scope:'user',interface:{displayName:'Browser Control',shortDescription:'浏览器导航、截图与交互验证',brandColor:'#4a90e2',defaultPrompt:'检查当前页面的布局、可访问性和交互状态。'},dependencies:{tools:[{type:'mcp',value:'browser',description:'需要浏览器控制服务'}]}},
       {name:'project-review',path:'E:\\Projects\\demo\\.codex\\skills\\project-review\\SKILL.md',description:'按照项目约束执行代码审查。',enabled:true,scope:'repo',interface:{displayName:'项目代码审查',shortDescription:'检查正确性、回归风险与测试覆盖',brandColor:'#89d185'},dependencies:{tools:[]}},
@@ -17,6 +18,13 @@
     const previewMcp = [
       {name:'github',enabled:true,connectionStatus:'connected',config:{command:'npx',args:['-y','@modelcontextprotocol/server-github'],env:{GITHUB_TOKEN:'demo-secret'}},authStatus:'oAuth',pluginId:null,serverInfo:{name:'github',title:'GitHub',version:'2.4.1',description:'访问仓库、Issue 和 Pull Request。',websiteUrl:'https://github.com'},tools:{search_repositories:{name:'search_repositories',description:'搜索 GitHub 仓库'},get_pull_request:{name:'get_pull_request',description:'读取 Pull Request 详情'}},resources:[{name:'current-user',title:'当前用户',description:'已登录的 GitHub 用户资料',uri:'github://user'}],resourceTemplates:[{name:'repository',title:'仓库',description:'按 owner/name 读取仓库信息',uriTemplate:'github://repos/{owner}/{repo}'}]},
       {name:'design-system',enabled:true,connectionStatus:'failed',config:{url:'http://127.0.0.1:8088/mcp',http_headers:{Authorization:'Bearer demo-secret'}},authStatus:'notLoggedIn',pluginId:'design-tools',serverInfo:null,tools:{},resources:[],resourceTemplates:[]}
+    ];
+    const previewFiles = [
+      {name:'app.js',path:'src/main/resources/web/app.js'},
+      {name:'app.css',path:'src/main/resources/web/app.css'},
+      {name:'CodexToolWindowPanel.java',path:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java'},
+      {name:'ProjectFileSearch.java',path:'src/main/java/com/codexgui/service/ProjectFileSearch.java'},
+      {name:'README.md',path:'README.md'}
     ];
     window.codexHost = payload => {
       const message = JSON.parse(payload);
@@ -30,6 +38,11 @@
       if (['loadSkills','reloadSkills'].includes(message.action)) CodexGui.receive({type:'skills',items:previewSkills,errors:[{path:'E:\\Projects\\demo\\.codex\\skills\\broken\\SKILL.md',message:'frontmatter 缺少 name 字段'}]});
       if (['loadMcp','reloadMcp'].includes(message.action)) CodexGui.receive({type:'mcpServers',items:previewMcp});
       if (message.action === 'copyText') document.body.dataset.previewCopiedText = message.text;
+      if (message.action === 'listProjectFiles') {
+        const query = String(message.query || '').toLowerCase();
+        const items = previewFiles.filter(item => !query || item.path.toLowerCase().includes(query) || item.name.toLowerCase().includes(query));
+        setTimeout(() => CodexGui.receive({type:'projectFiles',requestId:message.requestId,items}), 25);
+      }
       if (message.action === 'setMcpEnabled') {
         const server = previewMcp.find(item => item.name === message.name);
         if (server) server.enabled = message.enabled;

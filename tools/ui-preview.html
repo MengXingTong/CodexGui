@@ -31,6 +31,7 @@
       const message = JSON.parse(payload);
       window.previewLastMessage = message;
       document.body.dataset.previewLastAction = message.action;
+      document.body.dataset.previewLastPayload = payload;
       if (message.action === 'toggleReasoning') previewState.showReasoning = !previewState.showReasoning;
       if (message.action === 'toggleStreaming') previewState.streamResponses = !previewState.streamResponses;
       if (message.action === 'setting') previewState[message.key] = message.value;

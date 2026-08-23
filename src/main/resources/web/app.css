@@ -149,7 +149,7 @@ button { color: inherit; }
 .composer.drag-active .drop-overlay { display: flex; }
 .composer-grip { position: absolute; z-index: 10; top: -20px; left: 50%; width: 112px; height: 14px; transform: translateX(-50%); cursor: ns-resize; touch-action: none; user-select: none; }
 .composer-grip::before { content: ''; position: absolute; top: 7px; left: 50%; width: 60px; height: 4px; transform: translateX(-50%); border-radius: 999px; background: var(--placeholder); opacity: .55; }
-.context-row { min-height: 32px; display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding: 6px 12px; background: #2f2f2f; border-radius: 8px 8px 0 0; }
+.context-row { min-width: 0; min-height: 32px; display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding: 6px 12px; background: #2f2f2f; border-radius: 8px 8px 0 0; }
 .context-tools, .context-tools-right { display: flex; align-items: center; gap: 4px; }
 .context-tools-right { margin-left: auto; }
 .context-tool-btn { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; outline: 0; background: transparent; color: #888; cursor: pointer; }
@@ -167,6 +167,9 @@ button { color: inherit; }
 .token-indicator:hover .token-tooltip { opacity: 1; visibility: visible; }
 .context-item { position: relative; width: max-content; min-width: 0; max-width: min(520px, 58vw, calc(100% - 126px)); flex: 0 1 auto; display: flex; align-items: center; padding: 1px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; }
 .context-item > svg { width: 16px; height: 16px; flex: 0 0 auto; margin-right: 4px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.agent-context-item { max-width: min(180px,32vw); flex: 0 1 auto; color: #b7d8ea; }
+.agent-context-item > svg { color: #8fc7e8; }
+.agent-context-item .context-text { max-width: 150px; }
 .context-text { min-width: 0; max-width: 100%; margin: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-item > button { flex: 0 0 auto; padding: 0; border: 0; background: transparent; color: #888; cursor: pointer; font-size: 14px; line-height: 1; }
 .context-full-tooltip { position: absolute; z-index: 1002; bottom: calc(100% + 7px); left: 0; width: max-content; max-width: min(620px, calc(100vw - 140px)); padding: 6px 8px; border: 1px solid #454545; border-radius: 6px; background: #252526; color: var(--text); box-shadow: 0 4px 12px rgba(0,0,0,.3); font: 11px/1.45 var(--code-font); overflow-wrap: anywhere; white-space: normal; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s, visibility .15s; }
@@ -331,12 +334,20 @@ button { color: inherit; }
 .process-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 50%; background: var(--red); }
 .process-dot.online { background: var(--green); }
 
+/* Agent 选择只保留必要信息，避免长指令把主页浮层撑大。 */
+.composer-submenu.agents-submenu { width: min(340px,calc(100vw - 304px)); min-width: 260px; max-height: 250px; }
+.agents-submenu .submenu-option { min-height: 44px; gap: 8px; padding: 6px 10px; }
+.agents-submenu .submenu-option .config-icon { width: 18px; height: 18px; }
+.agents-submenu .config-copy b { font-size: 12px; }
+.agents-submenu .config-copy small { font-size: 10px; }
+.agents-submenu .submenu-create { min-height: 42px; padding: 6px 10px; }
+
 /* 设置页面：固定窄侧栏 + 单一内容区。 */
 .settings-page { min-height: 0; flex: 1; display: flex; overflow: hidden; background: var(--bg); }
 .settings-sidebar { width: 176px; flex: 0 0 auto; padding: 8px 0; overflow-y: auto; border-right: 1px solid var(--border); background: var(--bar); }
 .settings-nav { position: relative; width: 100%; min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 8px 15px; border: 0; background: transparent; color: #bbb; text-align: left; cursor: pointer; }
 .settings-nav:hover { background: var(--hover); color: var(--text-strong); }
-.settings-nav.active { color: white; background: #0e639c; font-weight: 600; }
+.settings-nav.active { color: white; background: var(--accent); font-weight: 600; }
 .settings-nav.active::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: white; }
 .settings-nav svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .settings-content { min-width: 0; flex: 1; padding: 24px 24px 70px; overflow-y: auto; }
@@ -460,6 +471,25 @@ button { color: inherit; }
 [data-theme="light"] .large-input,
 [data-theme="light"] .text-input,
 [data-theme="light"] .search-shell { background: var(--bg); }
+[data-theme="light"] .change-row { border-bottom-color: rgba(0,0,0,.06); }
+[data-theme="light"] .change-row:hover { background: rgba(0,0,0,.035); }
+[data-theme="light"] .filter-button,
+[data-theme="light"] .mcp-head-btn,
+[data-theme="light"] .mcp-icon-btn { background: var(--bar); }
+[data-theme="light"] .filter-button.active { background: var(--accent); }
+[data-theme="light"] .skill-import-menu,
+[data-theme="light"] .mcp-add-menu { border-color: var(--border-strong); background: var(--bg); box-shadow: 0 10px 28px rgba(0,0,0,.18); }
+[data-theme="light"] .skill-check { border-color: var(--border-strong); background: var(--raised); }
+[data-theme="light"] .skill-card-detail,
+[data-theme="light"] .mcp-card-content { background: var(--bg); }
+[data-theme="light"] .skill-action { background: var(--raised); }
+[data-theme="light"] .mcp-server-card:hover,
+[data-theme="light"] .mcp-server-card.expanded { border-color: var(--accent); }
+[data-theme="light"] .mcp-card-header:hover { background: rgba(0,0,0,.025); }
+[data-theme="light"] .mcp-tools-panel { background: var(--bg); }
+[data-theme="light"] .mcp-tools-head { background: var(--raised); }
+[data-theme="light"] .mcp-info-row > code { background: var(--raised); color: var(--text); }
+[data-theme="light"] .mcp-help-content section { background: var(--raised); }
 .settings-card, .editor-card { margin-bottom: 16px; overflow: visible; border: 1px solid var(--border-strong); border-radius: 8px; background: #252526; }
 .settings-card .setting-row { min-height: 64px; }
 .setting-value { min-width: 0; display: flex; justify-content: flex-end; }
@@ -468,8 +498,9 @@ button { color: inherit; }
 .setting-selector .selector-button > svg:first-child { display: none; }
 .setting-selector .selector-menu { top: calc(100% + 4px); bottom: auto; right: 0; left: auto; width: 100%; }
 .button-group { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
-.primary-btn { min-height: 30px; padding: 5px 12px; border: 1px solid #168bd2; border-radius: 4px; background: #0e639c; color: white; cursor: pointer; }
-.primary-btn:hover { background: #1177bb; }
+.primary-btn { min-height: 30px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--accent); border-radius: 4px; background: var(--accent); color: white; white-space: nowrap; cursor: pointer; }
+.primary-btn:hover { background: var(--accent-hover); }
+.primary-btn svg { width: 15px; height: 15px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .settings-actions { display: flex; justify-content: flex-end; }
 .editor-card { padding: 16px; overflow: hidden; }
 .editor-card label { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; color: var(--text-strong); font-weight: 600; }
@@ -483,7 +514,7 @@ button { color: inherit; }
 .prompt-list { margin-bottom: 25px; }
 .agent-card, .prompt-card { min-height: 66px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 7px; background: #252526; color: var(--text); text-align: left; }
 button.agent-card, button.prompt-card { width: 100%; cursor: pointer; }
-.agent-card.active, .prompt-card.active { border-color: #168bd2; background: rgba(14,99,156,.16); }
+.agent-card.active, .prompt-card.active { border-color: var(--accent); background: color-mix(in srgb,var(--accent) 16%,transparent); }
 .agent-main, .prompt-main { min-width: 0; flex: 1; display: flex; align-items: center; gap: 9px; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
 .agent-avatar, .prompt-avatar { width: 34px; height: 34px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 7px; background: #333; color: #bbb; }
 .agent-avatar svg, .prompt-avatar svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.7; }

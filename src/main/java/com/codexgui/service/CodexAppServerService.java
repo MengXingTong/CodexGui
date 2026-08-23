@@ -1,6 +1,7 @@
 package com.codexgui.service;
 
 import com.codexgui.model.Attachment;
+import com.codexgui.model.FileReference;
 import com.codexgui.settings.CodexSettingsState;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -293,6 +294,7 @@ public final class CodexAppServerService implements Disposable {
         String threadId,
         String text,
         List<Attachment> attachments,
+        List<FileReference> fileReferences,
         String model,
         String effort,
         String serviceTier,
@@ -315,7 +317,8 @@ public final class CodexAppServerService implements Disposable {
             input.add(textInput);
         }
 
-        // 附件直接转换为 app-server 原生输入项，不拼接额外提示词。
+        // 拖入的文件引用使用原生 mention；附件继续保持原有输入类型。
+        for (var reference : fileReferences) input.add(fileReferenceInput(reference));
         for (var attachment : attachments) input.add(attachmentInput(attachment));
         params.add("input", input);
         return request("turn/start", params);
@@ -348,6 +351,14 @@ public final class CodexAppServerService implements Disposable {
                 input.addProperty("path", attachment.path().toAbsolutePath().toString());
             }
         }
+        return input;
+    }
+
+    private JsonObject fileReferenceInput(FileReference reference) {
+        var input = new JsonObject();
+        input.addProperty("type", "mention");
+        input.addProperty("name", reference.name());
+        input.addProperty("path", reference.path().toString());
         return input;
     }
 

@@ -4,6 +4,7 @@ import com.codexgui.model.Attachment;
 import com.codexgui.model.ChangeEntry;
 import com.codexgui.model.ConversationEntry;
 import com.codexgui.model.EditorFileContext;
+import com.codexgui.model.FileReference;
 import com.codexgui.service.CodexAppServerService;
 import com.codexgui.service.CodexEventListener;
 import com.codexgui.service.NotificationSoundPlayer;
@@ -83,6 +84,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private final WorkspaceChangeService changeService;
     private final NotificationSoundPlayer notificationSoundPlayer = new NotificationSoundPlayer();
     private final List<Attachment> attachments = new ArrayList<>();
+    private final List<FileReference> fileReferences = new ArrayList<>();
     private final List<ConversationEntry> transcript = new ArrayList<>();
     private final Consumer<List<ChangeEntry>> changeListener;
     private final JBCefBrowser browser;
@@ -96,7 +98,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private boolean pageReady;
     private long usageUsedTokens;
     private long usageMaxTokens;
-    private volatile List<Path> pendingDraggedFiles = List.of();
+    private volatile List<Path> pendingDraggedPaths = List.of();
     private volatile ComposerDropRegion composerDropRegion;
     private volatile boolean nativeDragActive;
     private volatile List<ProjectFileSearch.Candidate> projectFileCatalog = List.of();
@@ -124,7 +126,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 ? fileNames.stream().map(this::droppedPath).filter(Objects::nonNull).toList()
                 : List.<Path>of();
             if (paths.isEmpty() && dragData.isFragment()) paths = droppedTextPaths(dragData.getFragmentText());
-            pendingDraggedFiles = paths;
+            pendingDraggedPaths = paths;
             publishNativeDragState(!paths.isEmpty());
             return false;
         }, browser.getCefBrowser());
@@ -207,9 +209,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "export" -> exportConversation();
                 case "pickFile" -> chooseAttachment(false);
                 case "pickImage" -> chooseAttachment(true);
-                case "dropFiles" -> addDroppedAttachments();
+                case "dropFiles" -> addDroppedInputs();
                 case "cancelDrop" -> {
-                    pendingDraggedFiles = List.of();
+                    pendingDraggedPaths = List.of();
                     publishNativeDragState(false);
                 }
                 case "composerBounds" -> updateComposerDropRegion(request);
@@ -217,6 +219,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                     string(request, "query", ""), longValue(request, "requestId")
                 );
                 case "removeAttachment" -> removeAttachment(integer(request, "index"));
+                case "removeFileReference" -> removeFileReference(integer(request, "index"));
                 case "acceptChange" -> acceptChange(integer(request, "index"));
                 case "revertChange" -> revertChange(integer(request, "index"));
                 case "acceptAll" -> acceptAllChanges();
@@ -287,6 +290,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("activeAgentId", settings.activeAgentId);
         state.add("agents", agentsJson(settings.agents));
         state.add("attachments", attachmentsJson());
+        state.add("fileReferences", fileReferencesJson());
         var event = event("bootstrap");
         event.add("state", state);
         sendEvent(event);
@@ -299,7 +303,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void sendInput(String text) {
         text = text.trim();
-        if (busy || text.isBlank() && attachments.isEmpty()) return;
+        if (busy || text.isBlank() && attachments.isEmpty() && fileReferences.isEmpty()) return;
         if (!codex.isConnected()) {
             var reconnectText = text;
             codex.start().thenRun(() -> sendInput(reconnectText)).exceptionally(error -> {
@@ -308,14 +312,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             });
             return;
         }
-        if (attachments.isEmpty() && handleNativeCommand(text)) return;
+        if (attachments.isEmpty() && fileReferences.isEmpty() && handleNativeCommand(text)) return;
 
         var settings = CodexSettingsState.getInstance().getState();
         var editorContext = settings.sendOpenedFilePath ? currentEditorContext() : null;
         var inputText = editorContext == null ? text : editorContext.appendTo(text);
         var sentAttachments = List.copyOf(attachments);
+        var sentFileReferences = List.copyOf(fileReferences);
         var display = new StringBuilder(text);
         if (editorContext != null) display.append("\n\n[当前编辑器上下文] ").append(editorContext.displayLabel());
+        sentFileReferences.forEach(reference -> display.append("\n@").append(reference.name()));
         sentAttachments.forEach(attachment -> display.append("\n").append(switch (attachment.kind()) {
             case IMAGE -> "[图片] ";
             case FILE -> "@";
@@ -323,7 +329,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         pendingUserBody = display.toString().trim();
         addEntry(new ConversationEntry(ConversationEntry.Kind.USER, "你", pendingUserBody, null));
         attachments.clear();
+        fileReferences.clear();
         publishAttachments();
+        publishFileReferences();
         setBusy(true);
 
         var capture = changeService.beginCaptureAsync().thenCompose(ignored -> currentThreadId == null
@@ -342,7 +350,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 })
             : CompletableFuture.completedFuture(currentThreadId));
         capture.thenCompose(threadId -> codex.startTurn(
-            threadId, inputText, sentAttachments, settings.model, settings.reasoningEffort,
+            threadId, inputText, sentAttachments, sentFileReferences, settings.model, settings.reasoningEffort,
             settings.serviceTier,
             settings.approvalPolicy, settings.sandboxMode
         )).thenAccept(result -> {
@@ -545,7 +553,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             })
             .setDropHandler(event -> {
                 publishNativeDragState(false);
-                addDroppedAttachments(nativeDroppedFiles(event));
+                addDroppedInputs(nativeDroppedFiles(event));
             })
             .setCleanUpOnLeaveCallback(() -> publishNativeDragState(false))
             .setDisposableParent(this)
@@ -559,7 +567,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
         var transferred = FileCopyPasteUtil.getFiles(event);
         if (transferred != null) paths.addAll(transferred);
-        return paths.stream().map(Path::toAbsolutePath).map(Path::normalize).filter(Files::isRegularFile).toList();
+        return paths.stream()
+            .map(Path::toAbsolutePath)
+            .map(Path::normalize)
+            .filter(path -> Files.isRegularFile(path) || Files.isDirectory(path))
+            .toList();
     }
 
     private boolean isInsideComposer(DnDEvent event) {
@@ -590,29 +602,43 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         sendEvent(event);
     }
 
-    private void addDroppedAttachments() {
-        var droppedFiles = pendingDraggedFiles;
-        pendingDraggedFiles = List.of();
-        addDroppedAttachments(droppedFiles);
+    private void addDroppedInputs() {
+        var droppedPaths = pendingDraggedPaths;
+        pendingDraggedPaths = List.of();
+        addDroppedInputs(droppedPaths);
     }
 
-    private void addDroppedAttachments(List<Path> droppedFiles) {
+    private void addDroppedInputs(List<Path> droppedPaths) {
         publishNativeDragState(false);
-        var added = 0;
-        for (var path : droppedFiles) {
+        var addedReferences = 0;
+        var addedImages = 0;
+        // 图片保留附件行为，普通文件和目录改为可移除的 Codex 文件引用。
+        for (var path : droppedPaths) {
             var normalized = path.toAbsolutePath().normalize();
-            if (!Files.isRegularFile(normalized)) continue;
-            if (attachments.stream().anyMatch(item -> item.path().toAbsolutePath().normalize().equals(normalized))) continue;
-            var kind = isImageAttachment(normalized) ? Attachment.Kind.IMAGE : Attachment.Kind.FILE;
-            attachments.add(new Attachment(kind, normalized.getFileName().toString(), normalized));
-            added++;
+            if (!Files.isRegularFile(normalized) && !Files.isDirectory(normalized)) continue;
+            if (Files.isRegularFile(normalized) && isImageAttachment(normalized)) {
+                if (attachments.stream().anyMatch(item -> item.path().toAbsolutePath().normalize().equals(normalized))) continue;
+                attachments.add(new Attachment(Attachment.Kind.IMAGE, normalized.getFileName().toString(), normalized));
+                addedImages++;
+                continue;
+            }
+            if (fileReferences.stream().anyMatch(item -> item.path().equals(normalized))) continue;
+            fileReferences.add(FileReference.fromPath(normalized));
+            addedReferences++;
         }
-        if (added == 0) {
-            toast("未能读取拖入的文件");
+        if (addedReferences == 0 && addedImages == 0) {
+            toast("未能读取拖入的文件或目录");
             return;
         }
-        publishAttachments();
-        toast("已添加 " + added + " 个文件");
+        if (addedReferences > 0) publishFileReferences();
+        if (addedImages > 0) publishAttachments();
+        if (addedReferences > 0 && addedImages > 0) {
+            toast("已引用 " + addedReferences + " 个路径，并添加 " + addedImages + " 个图片附件");
+        } else if (addedReferences > 0) {
+            toast("已添加 " + addedReferences + " 个文件引用");
+        } else {
+            toast("已添加 " + addedImages + " 个图片附件");
+        }
     }
 
     private void publishProjectFiles(String query, long requestId) {
@@ -792,6 +818,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         publishAttachments();
     }
 
+    private void removeFileReference(int index) {
+        if (index < 0 || index >= fileReferences.size()) return;
+        fileReferences.remove(index);
+        publishFileReferences();
+    }
+
     private JsonArray attachmentsJson() {
         var items = new JsonArray();
         for (var attachment : attachments) {
@@ -807,6 +839,24 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void publishAttachments() {
         var event = event("attachments");
         event.add("items", attachmentsJson());
+        sendEvent(event);
+    }
+
+    private JsonArray fileReferencesJson() {
+        var items = new JsonArray();
+        for (var reference : fileReferences) {
+            var item = new JsonObject();
+            item.addProperty("name", reference.name());
+            item.addProperty("path", reference.path().toString());
+            item.addProperty("directory", reference.directory());
+            items.add(item);
+        }
+        return items;
+    }
+
+    private void publishFileReferences() {
+        var event = event("fileReferences");
+        event.add("items", fileReferencesJson());
         sendEvent(event);
     }
 

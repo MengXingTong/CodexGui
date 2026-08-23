@@ -188,6 +188,17 @@ button { color: inherit; }
 .attachment-name { max-width: 100%; margin-top: 2px; overflow: hidden; color: #666; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-remove { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: rgba(0,0,0,.7); color: white; cursor: pointer; opacity: 0; font-size: 10px; }
 .attachment-item:hover .attachment-remove { opacity: 1; }
+.file-reference-list { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 12px 2px; }
+.file-reference-chip { position: relative; max-width: min(260px, calc(100% - 4px)); height: 26px; display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px 1px 6px; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: none; }
+.file-reference-icon { width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; color: #4fc3f7; }
+.file-reference-chip.directory .file-reference-icon { color: #d7ba7d; }
+.file-reference-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.file-reference-name { min-width: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-reference-remove { width: 18px; height: 18px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #888; cursor: pointer; opacity: .65; }
+.file-reference-remove:hover { background: var(--hover); color: var(--text); opacity: 1; }
+.file-reference-remove svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; }
+.file-reference-tooltip { position: absolute; z-index: 1002; bottom: calc(100% + 7px); left: 0; width: max-content; max-width: min(620px, calc(100vw - 32px)); padding: 6px 8px; border: 1px solid #454545; border-radius: 6px; background: #252526; color: var(--text); box-shadow: 0 4px 12px rgba(0,0,0,.3); font: 11px/1.45 var(--code-font); overflow-wrap: anywhere; white-space: normal; opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .15s, visibility .15s; }
+.file-reference-chip:hover .file-reference-tooltip, .file-reference-chip:focus-within .file-reference-tooltip { opacity: 1; visibility: visible; }
 .input-wrap { position: relative; padding: 6px 8px; overflow-y: auto; }
 .input { width: 100%; min-height: 84px; resize: none; overflow: hidden; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font: 14px/1.5 var(--ui-font); }
 .input::placeholder { color: var(--placeholder); }
@@ -431,6 +442,8 @@ button { color: inherit; }
 [data-theme="light"] .token-tooltip { border-color: #c9c9c9; background: #fff; }
 [data-theme="light"] .token-ring-bg { stroke: rgba(0,0,0,.1); }
 [data-theme="light"] .attachment-item { border-color: #e0e0e0; background: #f5f5f5; }
+[data-theme="light"] .file-reference-chip,
+[data-theme="light"] .file-reference-tooltip { border-color: #d0d0d0; background: #f3f3f3; color: #333; }
 [data-theme="light"] .selector-button { color: #555; }
 [data-theme="light"] .selector-menu,
 [data-theme="light"] .composer-menu,

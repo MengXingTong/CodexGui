@@ -1,0 +1,31 @@
+name: Publish plugin
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Publish plugin
+        run: ./gradlew publishPlugin
+        env:
+          INTELLIJ_PLATFORM_PUBLISH_TOKEN: ${{ secrets.INTELLIJ_PLATFORM_PUBLISH_TOKEN }}

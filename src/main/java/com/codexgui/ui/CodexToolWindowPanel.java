@@ -239,7 +239,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                     string(request, "query", ""), longValue(request, "requestId")
                 );
                 case "removeAttachment" -> removeAttachment(integer(request, "index"));
-                case "removeFileReference" -> removeFileReference(integer(request, "index"));
+                case "removeFileReference" -> removeFileReference(string(request, "id", ""));
+                case "removeFileReferences" -> removeFileReferences(request);
                 case "addFileReferences" -> addFileReferences(request);
                 case "reorderFileReferences" -> reorderFileReferences(request);
                 case "acceptChange" -> acceptChange(integer(request, "index"));
@@ -396,9 +397,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var inputText = editorContext == null ? text : editorContext.appendTo(text);
         var sentAttachments = List.copyOf(attachments);
         var sentFileReferences = List.copyOf(fileReferences);
-        var display = new StringBuilder(text);
+        var display = new StringBuilder(embedFileReferencePaths(text, sentFileReferences));
         if (editorContext != null) display.append("\n\n[当前编辑器上下文] ").append(editorContext.displayLabel());
-        sentFileReferences.forEach(reference -> display.append("\n@").append(reference.name()));
         sentAttachments.forEach(attachment -> display.append("\n").append(switch (attachment.kind()) {
             case IMAGE -> "[图片] ";
             case FILE -> "@";
@@ -444,6 +444,21 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             asyncError("无法发送消息", error);
             return null;
         });
+    }
+
+    private String embedFileReferencePaths(String text, List<FileReference> references) {
+        var parts = text.split("\uFFFC", -1);
+        var embeddedCount = Math.min(references.size(), Math.max(0, parts.length - 1));
+        var result = new StringBuilder();
+        for (var index = 0; index < parts.length; index++) {
+            result.append(parts[index]);
+            if (index < embeddedCount) result.append('@').append(references.get(index).path());
+        }
+        for (var index = embeddedCount; index < references.size(); index++) {
+            if (!result.isEmpty()) result.append('\n');
+            result.append('@').append(references.get(index).path());
+        }
+        return result.toString();
     }
 
     private boolean handleNativeCommand(String text) {
@@ -908,10 +923,18 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         publishAttachments();
     }
 
-    private void removeFileReference(int index) {
-        if (index < 0 || index >= fileReferences.size()) return;
-        fileReferences.remove(index);
+    private void removeFileReference(String id) {
+        if (id.isBlank()) return;
+        if (!fileReferences.removeIf(reference -> reference.id().equals(id))) return;
         publishFileReferences();
+    }
+
+    private void removeFileReferences(JsonObject request) {
+        var ids = request.getAsJsonArray("ids");
+        if (ids == null || ids.isEmpty()) return;
+        var removed = false;
+        for (var value : ids) removed |= fileReferences.removeIf(reference -> reference.id().equals(value.getAsString()));
+        if (removed) publishFileReferences();
     }
 
     private void addFileReferences(JsonObject request) {
@@ -928,17 +951,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void reorderFileReferences(JsonObject request) {
-        var paths = request.getAsJsonArray("paths");
-        if (paths == null || paths.size() != fileReferences.size()) return;
+        var ids = request.getAsJsonArray("ids");
+        if (ids == null || ids.size() != fileReferences.size()) return;
         var remaining = new ArrayList<>(fileReferences);
         var ordered = new ArrayList<FileReference>();
-        for (var value : paths) {
-            var path = droppedPath(value.getAsString());
-            if (path == null) return;
-            path = path.toAbsolutePath().normalize();
+        for (var value : ids) {
+            var id = value.getAsString();
             var index = -1;
             for (var i = 0; i < remaining.size(); i++) {
-                if (remaining.get(i).path().equals(path)) {
+                if (remaining.get(i).id().equals(id)) {
                     index = i;
                     break;
                 }
@@ -972,6 +993,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var items = new JsonArray();
         for (var reference : fileReferences) {
             var item = new JsonObject();
+            item.addProperty("id", reference.id());
             item.addProperty("name", reference.name());
             item.addProperty("path", reference.path().toString());
             item.addProperty("directory", reference.directory());
@@ -1630,12 +1652,21 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void appendEntry(String itemId, ConversationEntry.Kind kind, String title, String delta) {
-        for (var current : List.copyOf(transcript)) {
+        for (var index = 0; index < transcript.size(); index++) {
+            var current = transcript.get(index);
             if (!Objects.equals(itemId, current.itemId())) continue;
-            replaceEntry(itemId, kind, title, current.body() + delta);
+            transcript.set(index, new ConversationEntry(kind, title, current.body() + delta, itemId));
+            var event = event("appendMessage");
+            event.addProperty("itemId", itemId);
+            event.addProperty("kind", kind.name().toLowerCase());
+            event.addProperty("title", title);
+            event.addProperty("delta", delta);
+            sendEvent(event);
             return;
         }
-        replaceEntry(itemId, kind, title, delta);
+        var entry = new ConversationEntry(kind, title, delta, itemId);
+        transcript.add(entry);
+        publishEntry(entry);
     }
 
     private JsonObject entryJson(ConversationEntry entry) {
@@ -2065,7 +2096,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             var input = element.getAsJsonObject();
             var part = switch (string(input, "type", "")) {
                 case "text" -> string(input, "text", "");
-                case "mention" -> "@" + string(input, "name", string(input, "path", "文件"));
+                case "mention" -> "@" + string(input, "path", string(input, "name", "文件"));
                 case "localImage", "image" -> "[图片] " + string(input, "path", "");
                 case "skill" -> "[Skill] " + string(input, "name", "");
                 default -> "";

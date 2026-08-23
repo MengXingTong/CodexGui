@@ -78,6 +78,24 @@ button { color: inherit; }
 .session-tab-add { width: 32px; height: 32px; align-self: center; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
 .session-tab-add:hover { background: var(--hover); color: var(--text-strong); }
 .session-tab-add svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.tab-context-menu { position: fixed; z-index: 260; width: min(320px,calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto; padding: 6px; border: 1px solid #4a4a4a; border-radius: 7px; background: #2b2d30; box-shadow: 0 10px 28px rgba(0,0,0,.46); }
+.tab-menu-item { width: 100%; min-height: 32px; display: grid; grid-template-columns: 20px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 5px 8px; border: 0; border-radius: 4px; outline: 0; background: transparent; color: var(--text-strong); text-align: left; cursor: pointer; }
+.tab-menu-item:hover, .tab-menu-item:focus-visible { background: #3a3d41; }
+.tab-menu-item:disabled { color: #777; cursor: default; }
+.tab-menu-item:disabled:hover { background: transparent; }
+.tab-menu-item > svg, .tab-menu-check svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.tab-menu-item kbd { color: #8b8d90; font: 12px var(--ui-font); white-space: nowrap; }
+.tab-menu-separator { height: 1px; margin: 5px 7px; background: #45474a; }
+.tab-menu-heading { padding: 4px 8px 3px 37px; color: #888b8f; font-size: 11px; }
+.tab-menu-check { width: 20px; height: 20px; display: grid; place-items: center; }
+.tab-menu-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab-menu-tab.selected { background: #34383c; }
+.tab-menu-tab .session-tab-dot { justify-self: end; }
+.tab-context-menu:not(.tab-list-menu) > .tab-menu-heading,
+.tab-context-menu:not(.tab-list-menu) > .tab-menu-heading ~ .tab-menu-tab,
+.tab-context-menu:not(.tab-list-menu) > .tab-menu-separator:has(+ .tab-menu-heading) { display: none; }
+.tab-list-menu { width: min(280px,calc(100vw - 16px)); }
+.tab-list-menu .tab-menu-heading { padding: 5px 8px 6px; }
 
 .chat-page { min-height: 0; flex: 1; display: flex; flex-direction: column; overflow: hidden; }
 .messages-shell { position: relative; flex: 1; min-height: 0; display: flex; }
@@ -208,7 +226,8 @@ button { color: inherit; }
 .attachment-name { max-width: 100%; margin-top: 2px; overflow: hidden; color: #666; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-remove { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: rgba(0,0,0,.7); color: white; cursor: pointer; opacity: 0; font-size: 10px; }
 .attachment-item:hover .attachment-remove { opacity: 1; }
-.file-reference-chip { position: relative; max-width: min(260px, calc(100% - 4px)); height: 26px; display: inline-flex; align-items: center; gap: 4px; margin: 0 4px 4px 0; padding: 1px 4px 1px 6px; vertical-align: middle; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: all; }
+.file-reference-chip { position: relative; max-width: min(260px, calc(100% - 4px)); height: 26px; display: inline-flex; align-items: center; gap: 4px; margin: 0 4px 4px 0; padding: 1px 4px 1px 6px; vertical-align: middle; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: all; cursor: grab; }
+.file-reference-chip.dragging { opacity: .45; cursor: grabbing; }
 .file-reference-icon { width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; color: #4fc3f7; }
 .file-reference-chip.directory .file-reference-icon { color: #d7ba7d; }
 .file-reference-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

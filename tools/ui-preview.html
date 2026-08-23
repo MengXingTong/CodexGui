@@ -10,7 +10,8 @@
   <script>
     const previewContextEnabled = location.search.includes('context');
     const previewReferencesEnabled = location.search.includes('references');
-    const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',serviceTier:'standard',streamResponses:true,showReasoning:true,sendShortcut:'enter',permissionDialogTimeoutSeconds:300,sendOpenedFilePath:previewContextEnabled,activeFile:previewContextEnabled?'src/main/java/com/codexgui/client/BoundaryDreamlandClientConnectionManager.java':'',activeFileStartLine:previewContextEnabled?128:0,activeFileEndLine:previewContextEnabled?146:0,usagePercentage:18.6,usageUsedTokens:48062,usageMaxTokens:258400,diffExpandedByDefault:false,newSessionConfirmEnabled:true,askUserQuestionNotificationEnabled:true,askUserQuestionSoundEnabled:true,taskCompletionNotificationEnabled:true,taskCompletionSoundEnabled:true,systemNotificationOnlyWhenUnfocused:false,soundOnlyWhenUnfocused:false,notificationSound:'chime',customSoundPath:'',globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['gpt-5.6-codex','gpt-5.4'],attachments:[],fileReferences:previewReferencesEnabled?[{name:'BoundaryDreamlandEditor.Target.cs',path:'E:\\Projects\\BoundaryDreamland\\Source\\BoundaryDreamlandEditor.Target.cs',directory:false},{name:'feature-with-a-very-long-directory-name',path:'E:\\Projects\\BoundaryDreamland\\feature-with-a-very-long-directory-name',directory:true},{name:'README.md',path:'E:\\Projects\\BoundaryDreamland\\README.md',directory:false}]:[]};
+    const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',serviceTier:'standard',streamResponses:true,showReasoning:true,sendShortcut:'enter',permissionDialogTimeoutSeconds:300,sendOpenedFilePath:previewContextEnabled,activeFile:previewContextEnabled?'src/main/java/com/codexgui/client/BoundaryDreamlandClientConnectionManager.java':'',activeFileStartLine:previewContextEnabled?128:0,activeFileEndLine:previewContextEnabled?146:0,usagePercentage:18.6,usageUsedTokens:48062,usageMaxTokens:258400,diffExpandedByDefault:false,newSessionConfirmEnabled:true,askUserQuestionNotificationEnabled:true,askUserQuestionSoundEnabled:true,taskCompletionNotificationEnabled:true,taskCompletionSoundEnabled:true,systemNotificationOnlyWhenUnfocused:false,soundOnlyWhenUnfocused:false,notificationSound:'chime',customSoundPath:'',globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['gpt-5.6-codex','gpt-5.4'],attachments:[],fileReferences:previewReferencesEnabled?[{id:'ref-1',name:'BoundaryDreamlandEditor.Target.cs',path:'E:\\Projects\\BoundaryDreamland\\Source\\BoundaryDreamlandEditor.Target.cs',directory:false},{id:'ref-2',name:'feature-with-a-very-long-directory-name',path:'E:\\Projects\\BoundaryDreamland\\feature-with-a-very-long-directory-name',directory:true},{id:'ref-3',name:'README.md',path:'E:\\Projects\\BoundaryDreamland\\README.md',directory:false}]:[]};
+    let previewReferenceSequence = 3;
     const previewSkills = [
       {name:'browser',path:'C:\\Users\\demo\\.codex\\skills\\browser\\SKILL.md',description:'控制浏览器并检查本地 Web 界面。',enabled:true,scope:'user',interface:{displayName:'Browser Control',shortDescription:'浏览器导航、截图与交互验证',brandColor:'#4a90e2',defaultPrompt:'检查当前页面的布局、可访问性和交互状态。'},dependencies:{tools:[{type:'mcp',value:'browser',description:'需要浏览器控制服务'}]}},
       {name:'project-review',path:'E:\\Projects\\demo\\.codex\\skills\\project-review\\SKILL.md',description:'按照项目约束执行代码审查。',enabled:true,scope:'repo',interface:{displayName:'项目代码审查',shortDescription:'检查正确性、回归风险与测试覆盖',brandColor:'#89d185'},dependencies:{tools:[]}},
@@ -41,20 +42,24 @@
       if (['loadMcp','reloadMcp'].includes(message.action)) CodexGui.receive({type:'mcpServers',items:previewMcp});
       if (message.action === 'copyText') document.body.dataset.previewCopiedText = message.text;
       if (message.action === 'removeFileReference') {
-        previewState.fileReferences.splice(message.index, 1);
+        previewState.fileReferences = previewState.fileReferences.filter(item => item.id !== message.id);
+        CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
+      }
+      if (message.action === 'removeFileReferences') {
+        previewState.fileReferences = previewState.fileReferences.filter(item => !message.ids.includes(item.id));
         CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
       }
       if (message.action === 'addFileReferences') {
         message.paths.forEach(path => {
           const existing = previewState.fileReferences.find(item => item.path === path);
-          if (existing) previewState.fileReferences.push({...existing});
+          if (existing) previewState.fileReferences.push({...existing,id:`ref-${++previewReferenceSequence}`});
         });
         CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
       }
       if (message.action === 'reorderFileReferences') {
         const remaining = [...previewState.fileReferences];
-        previewState.fileReferences = message.paths.map(path => {
-          const index = remaining.findIndex(item => item.path === path);
+        previewState.fileReferences = message.ids.map(id => {
+          const index = remaining.findIndex(item => item.id === id);
           return index < 0 ? null : remaining.splice(index, 1)[0];
         }).filter(Boolean);
       }

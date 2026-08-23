@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.codexgui"
-version = "0.3.2"
+version = "0.3.3"
 
 repositories {
     mavenCentral()
@@ -62,6 +62,10 @@ intellijPlatform {
         ides {
             create(IntelliJPlatformType.IntellijIdeaCommunity, "2024.3.7")
         }
+    }
+
+    publishing {
+        token = providers.environmentVariable("INTELLIJ_PLATFORM_PUBLISH_TOKEN")
     }
 }
 

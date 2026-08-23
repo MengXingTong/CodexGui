@@ -2,7 +2,7 @@
 
 一个只面向 OpenAI Codex CLI 的 JetBrains 插件。部分界面结构、样式与交互实现参考并改写自 [CC GUI](https://github.com/zhukunpenglinyutong/jetbrains-cc-gui)；插件后端通过 `codex app-server --stdio` 使用 Codex 原生 JSON-RPC 协议，不添加增强提示词，也不提供供应商切换。
 
-当前版本：`0.3.2`
+当前版本：`0.3.3`
 
 ## 当前能力
 
@@ -12,14 +12,17 @@
 - 审批模式展开菜单采用适合 JetBrains 工具窗的紧凑双行布局
 - 命令执行、文件修改审批和中断
 - 无超时的 Codex 结构化提问窗口，支持方案说明、“其它”输入和多问题导航
-- 文本、文件引用与图片输入，支持编辑器选区上下文、项目树拖拽文件引用与图片附件；文件标签可选择复制，并按拖放位置或光标位置插入
+- 文本、文件引用与图片输入，支持编辑器选区上下文、项目树拖拽文件引用与图片附件；文件标签按输入位置发送给 Codex，并携带完整绝对路径；标签可直接拖动排序，也可选择、复制或剪切，并按拖放位置或光标位置插入，删除或剪切后再次插入不会错位
 - 用户/项目 Skills 导入、启停和 Codex 自动发现
 - 会话内命令、推理、计划、MCP 与文件修改事件展示
 - 基于回合前快照的修改捕获，覆盖补丁与 Shell 写文件
 - 修改列表、IDE Diff、逐文件/全部保留或撤销
 - 会话收藏、搜索、重命名和 Markdown 导出
-- CC-Gui 式单列界面：多会话页签、会话时间线、页内历史/设置、底部输入卡与可展开修改状态面板
+- CC-Gui 式单列界面：顶端多会话页签、会话时间线、页内历史/设置、底部输入卡与可展开修改状态面板
+- 页签右键菜单支持关闭当前/全部/其它页签、前后切换、页签列表、重命名、导出、会话搜索和左右移动，并提供常用快捷键
 - 多个页签可同时运行独立 Codex 回合，后台页签的流式响应、完成状态和提问不会串到当前页签
+- 输入聊天框内容超过自动高度上限时支持纵向滚动
+- 长流式回复采用增量事件传输，降低 IDE JVM 堆内存峰值
 - CC-Gui 式设置侧栏：基础设置、全局/项目提示词、Agent 身份与 Codex MCP
 - 输入区 Agent 身份标签支持直接切换身份；聊天设置浮层只保留流式传输与思考过程开关
 
@@ -45,6 +48,10 @@
 ```
 
 Windows PowerShell 可使用 `gradlew.bat` 替代 `./gradlew`。构建产物位于 `build/distributions/`。
+
+发布流程
+
+`.github/workflows/gradle-publish.yml` 会在 GitHub Release 发布后自动执行 `publishPlugin`，也可以从 Actions 页面手动运行。首次使用前，请在仓库 Settings → Secrets and variables → Actions 中添加 `INTELLIJ_PLATFORM_PUBLISH_TOKEN`，其值为 JetBrains Marketplace 发布令牌。发布版本以 `build.gradle.kts` 中的 `version` 为准。
 
 ## 已知边界
 

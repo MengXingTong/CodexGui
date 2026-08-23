@@ -35,6 +35,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public final class CodexAppServerService implements Disposable {
     private static final Logger LOG = Logger.getInstance(CodexAppServerService.class);
     private static final Gson GSON = new Gson();
+    private static final String FILE_REFERENCE_MARKER = "\uFFFC";
 
     private final Project project;
     private final AtomicLong requestSequence = new AtomicLong(1);
@@ -309,19 +310,32 @@ public final class CodexAppServerService implements Disposable {
         if (serviceTier != null && !serviceTier.isBlank() && !Objects.equals(serviceTier, "standard")) params.addProperty("serviceTier", serviceTier);
         params.add("sandboxPolicy", sandboxPolicy(sandboxMode));
         var input = new JsonArray();
-        if (!text.isBlank()) {
-            var textInput = new JsonObject();
-            textInput.addProperty("type", "text");
-            textInput.addProperty("text", text);
-            textInput.add("text_elements", new JsonArray());
-            input.add(textInput);
-        }
-
-        // 拖入的文件引用使用原生 mention；附件继续保持原有输入类型。
-        for (var reference : fileReferences) input.add(fileReferenceInput(reference));
+        addTextAndFileReferences(input, text, fileReferences);
+        // 附件继续保持原有输入类型。
         for (var attachment : attachments) input.add(attachmentInput(attachment));
         params.add("input", input);
         return request("turn/start", params);
+    }
+
+    private void addTextAndFileReferences(JsonArray input, String text, List<FileReference> fileReferences) {
+        var parts = Objects.requireNonNullElse(text, "").split(FILE_REFERENCE_MARKER, -1);
+        var embeddedCount = Math.min(fileReferences.size(), Math.max(0, parts.length - 1));
+        for (var index = 0; index < parts.length; index++) {
+            if (!parts[index].isEmpty()) input.add(textInput(parts[index]));
+            if (index < embeddedCount) input.add(fileReferenceInput(fileReferences.get(index)));
+        }
+        // 兼容没有占位符的旧调用，不能静默丢失文件引用。
+        for (var index = embeddedCount; index < fileReferences.size(); index++) {
+            input.add(fileReferenceInput(fileReferences.get(index)));
+        }
+    }
+
+    private JsonObject textInput(String text) {
+        var input = new JsonObject();
+        input.addProperty("type", "text");
+        input.addProperty("text", text);
+        input.add("text_elements", new JsonArray());
+        return input;
     }
 
     public CompletableFuture<JsonObject> interruptTurn(String threadId, String turnId) {

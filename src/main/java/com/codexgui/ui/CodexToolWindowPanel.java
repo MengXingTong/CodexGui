@@ -221,7 +221,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 });
                 case "send" -> sendInput(string(request, "text", ""));
                 case "stop" -> interruptCurrentTurn();
-                case "new" -> newConversation();
+                case "new" -> newConversation(string(request, "title", ""));
                 case "activateSession" -> publishCurrentSession();
                 case "history" -> loadHistory(string(request, "search", ""));
                 case "openThread" -> openThread(string(request, "id", ""));
@@ -555,15 +555,20 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void newConversation() {
+        newConversation("");
+    }
+
+    private void newConversation(String requestedTitle) {
         if (busy) return;
         var settings = CodexSettingsState.getInstance().getState();
         if (settings.newSessionConfirmEnabled && !transcript.isEmpty()
             && Messages.showYesNoDialog(project, "当前会话已有消息，确定要新建会话吗？", "新建会话", "新建", "取消", Messages.getQuestionIcon()) != Messages.YES) {
             return;
         }
+        // 新建会话时保留界面生成的序号，避免多个空白页签难以区分。
         currentThreadId = null;
         currentTurnId = null;
-        currentTitle = "新会话";
+        currentTitle = requestedTitle == null || requestedTitle.isBlank() ? "新会话" : requestedTitle.trim();
         clearConversation();
         publishThread();
     }
@@ -579,11 +584,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void renameCurrentThread() {
-        if (currentThreadId == null) return;
         var name = Messages.showInputDialog(project, "输入新的会话名称：", "重命名会话", Messages.getQuestionIcon(), currentTitle, null);
         if (name == null || name.isBlank()) return;
         var sessionId = activeSessionId;
         currentTitle = name.trim();
+        // 空白页签尚未创建 Codex thread，只更新本地会话标题。
+        if (currentThreadId == null) {
+            publishThread();
+            return;
+        }
         codex.setThreadName(currentThreadId, currentTitle).thenRun(() -> {
             activateSession(sessionId);
             publishThread();
@@ -657,6 +666,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 return true;
             })
             .setDropHandler(event -> {
+                // 原生项目树拖放不经过浏览器 drop 事件，先把释放坐标交给输入框定位逻辑。
+                publishNativeDropPosition(event);
                 publishNativeDragState(false);
                 addDroppedInputs(nativeDroppedFiles(event));
             })
@@ -704,6 +715,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         nativeDragActive = active;
         var event = event("nativeDrag");
         event.addProperty("active", active);
+        sendEvent(event);
+    }
+
+    private void publishNativeDropPosition(DnDEvent dragEvent) {
+        var component = browser.getComponent();
+        if (component.getWidth() <= 0 || component.getHeight() <= 0) return;
+        var point = dragEvent.getPointOn(component);
+        var event = event("nativeDrop");
+        event.addProperty("x", point.getX() / component.getWidth());
+        event.addProperty("y", point.getY() / component.getHeight());
         sendEvent(event);
     }
 

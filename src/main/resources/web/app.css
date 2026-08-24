@@ -145,6 +145,11 @@ button { color: inherit; }
 .messages-shell { position: relative; flex: 1; min-height: 0; display: flex; background: var(--bg); }
 .messages { min-width: 0; min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; background: var(--bg); }
 .messages.has-rail { padding-left: 26px; }
+.generation-status { flex: 0 0 auto; min-height: 43px; display: flex; align-items: center; gap: 12px; padding: 0 34px; border-top: 1px solid rgba(255,255,255,.04); color: var(--muted); font-size: 13px; }
+.generation-spinner { width: 16px; height: 16px; flex: 0 0 auto; border: 2px solid var(--border-strong); border-top-color: var(--muted); border-right-color: transparent; border-radius: 50%; animation: generation-spin .85s linear infinite; }
+.generation-status-label { white-space: nowrap; }
+.generation-status-time { color: var(--muted); white-space: nowrap; }
+@keyframes generation-spin { to { transform: rotate(360deg); } }
 .message { position: relative; max-width: 100%; min-width: 0; padding: 16px 20px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid rgba(255,255,255,.04); }
 .message:last-child { border-bottom: 0; }
 .message.user { align-items: flex-end; }
@@ -349,6 +354,7 @@ button { color: inherit; }
 @media (max-width: 400px) {
   .anchor-rail { display: none; }
   .messages.has-rail { padding-left: 0; }
+  .generation-status { padding-left: 14px; padding-right: 14px; }
   .message { padding-left: 14px; padding-right: 14px; }
   .selector { max-width: 92px; }
   .page-toolbar, .history-item, .settings { padding-left: 14px; padding-right: 14px; }

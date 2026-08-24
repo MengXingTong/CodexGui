@@ -4,4 +4,4 @@
 build/
 out/
 *.iml
-!AGENTS.md
+AGENTS.md

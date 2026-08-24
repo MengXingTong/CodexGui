@@ -20,7 +20,6 @@ public final class CodexSettingsConfigurable implements Configurable {
     private ComboBox<Choice> approvalCombo;
     private ComboBox<Choice> sandboxCombo;
     private JBCheckBox streamingCheckBox;
-    private JBCheckBox reasoningCheckBox;
     private JBCheckBox captureIgnoredCheckBox;
 
     @Override
@@ -42,7 +41,6 @@ public final class CodexSettingsConfigurable implements Configurable {
         sandboxCombo = new ComboBox<>(new Choice[]{new Choice("read-only", "只读"), new Choice("workspace-write", "标准"), new Choice("danger-full-access", "完全访问")});
         select(sandboxCombo, state.sandboxMode);
         streamingCheckBox = new JBCheckBox("流式显示 Codex 输出", state.streamResponses);
-        reasoningCheckBox = new JBCheckBox("在对话中显示推理摘要", state.showReasoning);
         captureIgnoredCheckBox = new JBCheckBox("捕获 Git 忽略文件的修改", state.captureIgnoredFiles);
 
         return FormBuilder.createFormBuilder()
@@ -54,7 +52,6 @@ public final class CodexSettingsConfigurable implements Configurable {
             .addLabeledComponent(new JBLabel("默认审批策略："), approvalCombo)
             .addLabeledComponent(new JBLabel("默认沙箱："), sandboxCombo)
             .addComponent(streamingCheckBox)
-            .addComponent(reasoningCheckBox)
             .addComponent(captureIgnoredCheckBox)
             .addComponentFillVertically(new JPanel(), 0)
             .getPanel();
@@ -70,7 +67,6 @@ public final class CodexSettingsConfigurable implements Configurable {
             || !Objects.equals(state.approvalPolicy, value(approvalCombo, "on-request"))
             || !Objects.equals(state.sandboxMode, value(sandboxCombo, "workspace-write"))
             || state.streamResponses != streamingCheckBox.isSelected()
-            || state.showReasoning != reasoningCheckBox.isSelected()
             || state.captureIgnoredFiles != captureIgnoredCheckBox.isSelected();
     }
 
@@ -84,7 +80,6 @@ public final class CodexSettingsConfigurable implements Configurable {
         state.approvalPolicy = value(approvalCombo, "on-request");
         state.sandboxMode = value(sandboxCombo, "workspace-write");
         state.streamResponses = streamingCheckBox.isSelected();
-        state.showReasoning = reasoningCheckBox.isSelected();
         state.captureIgnoredFiles = captureIgnoredCheckBox.isSelected();
     }
 
@@ -98,7 +93,6 @@ public final class CodexSettingsConfigurable implements Configurable {
         select(approvalCombo, state.approvalPolicy);
         select(sandboxCombo, state.sandboxMode);
         streamingCheckBox.setSelected(state.streamResponses);
-        reasoningCheckBox.setSelected(state.showReasoning);
         captureIgnoredCheckBox.setSelected(state.captureIgnoredFiles);
     }
 

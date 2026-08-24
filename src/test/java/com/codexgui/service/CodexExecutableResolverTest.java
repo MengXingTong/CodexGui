@@ -31,6 +31,18 @@ final class CodexExecutableResolverTest {
     }
 
     @Test
+    void prefersAppServerBundleWithCodeModeHost() throws IOException {
+        var sandboxCli = temporaryDirectory.resolve(".codex").resolve(".sandbox-bin").resolve("codex.exe");
+        var appServerCli = temporaryDirectory.resolve(".codex").resolve("plugins").resolve(".plugin-appserver").resolve("codex.exe");
+        Files.createDirectories(sandboxCli.getParent());
+        Files.createDirectories(appServerCli.getParent());
+        Files.createFile(sandboxCli);
+        Files.createFile(appServerCli);
+
+        assertEquals(appServerCli.toString(), CodexExecutableResolver.resolve("codex", true, Map.of(), temporaryDirectory));
+    }
+
+    @Test
     void skipsRestrictedWindowsAppsCandidate() throws IOException {
         var windowsApps = temporaryDirectory.resolve("WindowsApps");
         Files.createDirectories(windowsApps);

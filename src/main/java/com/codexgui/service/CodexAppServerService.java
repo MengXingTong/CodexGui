@@ -90,6 +90,12 @@ public final class CodexAppServerService implements Disposable {
         try {
             var command = createCommand(executable);
             var builder = new ProcessBuilder(command);
+            // JetBrains 进程的环境变量可能早于 Codex Desktop 启动，显式指定配置目录，确保读取同一份 config.toml/auth.json。
+            var codexHome = System.getenv("CODEX_HOME");
+            if (codexHome == null || codexHome.isBlank()) {
+                codexHome = Path.of(System.getProperty("user.home", "."), ".codex").toString();
+            }
+            builder.environment().put("CODEX_HOME", codexHome);
             if (project.getBasePath() != null) builder.directory(Path.of(project.getBasePath()).toFile());
             process = builder.start();
             writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
@@ -146,9 +152,6 @@ public final class CodexAppServerService implements Disposable {
         params.addProperty("limit", 100);
         params.addProperty("sortKey", "updated_at");
         params.addProperty("sortDirection", "desc");
-        var providers = new JsonArray();
-        providers.add("openai");
-        params.add("modelProviders", providers);
         if (project.getBasePath() != null) params.addProperty("cwd", project.getBasePath());
         if (searchTerm != null && !searchTerm.isBlank()) params.addProperty("searchTerm", searchTerm.trim());
         return request("thread/list", params);
@@ -187,7 +190,6 @@ public final class CodexAppServerService implements Disposable {
     ) {
         var params = new JsonObject();
         if (project.getBasePath() != null) params.addProperty("cwd", project.getBasePath());
-        params.addProperty("modelProvider", "openai");
         if (model != null && !model.isBlank()) params.addProperty("model", model);
         if (serviceTier != null && !serviceTier.isBlank() && !Objects.equals(serviceTier, "standard")) params.addProperty("serviceTier", serviceTier);
         params.addProperty("approvalPolicy", approvalPolicy);
@@ -203,7 +205,6 @@ public final class CodexAppServerService implements Disposable {
     public CompletableFuture<JsonObject> resumeThread(String threadId) {
         var params = new JsonObject();
         params.addProperty("threadId", threadId);
-        params.addProperty("modelProvider", "openai");
         params.addProperty("excludeTurns", false);
         return request("thread/resume", params);
     }
@@ -372,7 +373,7 @@ public final class CodexAppServerService implements Disposable {
         var input = new JsonObject();
         input.addProperty("type", "mention");
         input.addProperty("name", reference.name());
-        input.addProperty("path", reference.path().toString());
+        input.addProperty("path", reference.path().toAbsolutePath().normalize().toString());
         return input;
     }
 

@@ -22,16 +22,18 @@ final class CodexExecutableResolver {
         if (!windows) return "codex";
 
         var candidates = new ArrayList<Path>();
-        addPathCandidates(candidates, environment.get("PATH"));
+        var configuredHome = path(environment.get("CODEX_HOME"));
+        var codexHome = configuredHome == null ? userHome.resolve(".codex") : configuredHome;
+        // 优先使用用户级 Codex 安装目录，避免 PATH 上的旧 npm 版本抢先被启动。
+        candidates.add(codexHome.resolve("bin").resolve("codex.exe"));
+        // app-server 与 code-mode host 必须来自同一目录；桌面应用的插件运行时会成对发布这两个文件。
+        candidates.add(codexHome.resolve("plugins").resolve(".plugin-appserver").resolve("codex.exe"));
+        candidates.add(codexHome.resolve(".sandbox-bin").resolve("codex.exe"));
 
         var appData = path(environment.get("APPDATA"));
         if (appData != null) candidates.add(appData.resolve("npm").resolve("codex.cmd"));
 
-        var configuredHome = path(environment.get("CODEX_HOME"));
-        var codexHome = configuredHome == null ? userHome.resolve(".codex") : configuredHome;
-        candidates.add(codexHome.resolve("bin").resolve("codex.exe"));
-        candidates.add(codexHome.resolve(".sandbox-bin").resolve("codex.exe"));
-        candidates.add(codexHome.resolve("plugins").resolve(".plugin-appserver").resolve("codex.exe"));
+        addPathCandidates(candidates, environment.get("PATH"));
 
         // WindowsApps 中的桌面应用副本需要应用身份，普通 JetBrains 进程无法直接启动。
         return candidates.stream()

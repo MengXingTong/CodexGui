@@ -19,7 +19,6 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         public String approvalPolicy = "on-request";
         public String sandboxMode = "workspace-write";
         public boolean streamResponses = true;
-        public boolean showReasoning = true;
         public String sendShortcut = "enter";
         public int permissionDialogTimeoutSeconds = 300;
         public boolean sendOpenedFilePath = false;
@@ -35,6 +34,7 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         public String customSoundPath = "";
         public boolean captureIgnoredFiles = true;
         public String globalInstructions = "";
+        public String projectInstructions = "";
         public String activePromptId = "";
         public String activeAgentId = "";
         public List<PromptPreset> prompts = new ArrayList<>(List.of(

@@ -257,7 +257,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "behaviorSetting" -> updateBehaviorSetting(request);
                 case "browseNotificationSound" -> browseNotificationSound();
                 case "testNotificationSound" -> playConfiguredSound(true);
-                case "toggleReasoning" -> toggleReasoning();
                 case "toggleStreaming" -> toggleStreaming();
                 case "saveInstructions" -> saveInstructions(request);
                 case "savePrompt" -> savePrompt(request);
@@ -293,6 +292,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void bootstrap() {
         pageReady = true;
         var settings = CodexSettingsState.getInstance().getState();
+        var instructions = sharedInstructions(settings);
         var state = new JsonObject();
         state.addProperty("connected", codex.isConnected());
         state.addProperty("sessionId", activeSessionId);
@@ -305,12 +305,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("approval", settings.approvalPolicy);
         state.addProperty("sandbox", settings.sandboxMode);
         state.addProperty("streamResponses", settings.streamResponses);
-        state.addProperty("showReasoning", settings.showReasoning);
         addBehaviorSettings(state, settings);
         state.addProperty("globalInstructions", settings.globalInstructions);
+        state.addProperty("projectInstructions", instructions);
         state.addProperty("activePromptId", settings.activePromptId);
         state.add("prompts", promptsJson(settings.prompts));
-        state.addProperty("projectInstructions", CodexProjectSettingsState.getInstance(project).getState().projectInstructions);
         state.addProperty("activeAgentId", settings.activeAgentId);
         state.add("agents", agentsJson(settings.agents));
         state.add("attachments", attachmentsJson());
@@ -402,7 +401,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         sentAttachments.forEach(attachment -> display.append("\n").append(switch (attachment.kind()) {
             case IMAGE -> "[图片] ";
             case FILE -> "@";
-        }).append(attachment.name()));
+        }).append(attachment.kind() == Attachment.Kind.FILE ? absolutePath(attachment.path()) : attachment.name()));
         pendingUserBody = display.toString().trim();
         addEntry(new ConversationEntry(ConversationEntry.Kind.USER, "你", pendingUserBody, null));
         attachments.clear();
@@ -452,13 +451,17 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var result = new StringBuilder();
         for (var index = 0; index < parts.length; index++) {
             result.append(parts[index]);
-            if (index < embeddedCount) result.append('@').append(references.get(index).path());
+            if (index < embeddedCount) result.append('@').append(absolutePath(references.get(index).path()));
         }
         for (var index = embeddedCount; index < references.size(); index++) {
             if (!result.isEmpty()) result.append('\n');
-            result.append('@').append(references.get(index).path());
+            result.append('@').append(absolutePath(references.get(index).path()));
         }
         return result.toString();
+    }
+
+    private String absolutePath(Path path) {
+        return path.toAbsolutePath().normalize().toString();
     }
 
     private boolean handleNativeCommand(String text) {
@@ -644,7 +647,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         try {
             var value = Objects.requireNonNullElse(rawPath, "").trim();
             if (value.startsWith("@")) value = value.substring(1).trim();
-            return value.startsWith("file:") ? Path.of(URI.create(value)) : Path.of(value);
+            var path = value.startsWith("file:") ? Path.of(URI.create(value)) : Path.of(value);
+            if (path.isAbsolute()) return path.normalize();
+            var root = changeService.getRoot();
+            return root == null ? path.toAbsolutePath().normalize() : root.resolve(path).normalize();
         } catch (RuntimeException ignored) {
             return null;
         }
@@ -1220,16 +1226,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (soundEnabled && (!settings.soundOnlyWhenUnfocused || !focused)) playConfiguredSound(false);
     }
 
-    private void toggleReasoning() {
-        var settings = CodexSettingsState.getInstance().getState();
-        settings.showReasoning = !settings.showReasoning;
-        var state = new JsonObject();
-        state.addProperty("showReasoning", settings.showReasoning);
-        var event = event("bootstrap");
-        event.add("state", state);
-        sendEvent(event);
-    }
-
     private void toggleStreaming() {
         var settings = CodexSettingsState.getInstance().getState();
         settings.streamResponses = !settings.streamResponses;
@@ -1239,9 +1235,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void saveInstructions(JsonObject request) {
         var settings = CodexSettingsState.getInstance().getState();
         settings.globalInstructions = string(request, "global", "").trim();
-        CodexProjectSettingsState.getInstance(project).getState().projectInstructions = string(request, "project", "").trim();
+        settings.projectInstructions = string(request, "project", "").trim();
+        CodexProjectSettingsState.getInstance(project).getState().projectInstructions = "";
         publishSettings();
-        toast("指令已保存，将从下一个新会话开始生效");
+        toast("指令已保存到用户级配置，将从下一个新会话开始生效");
     }
 
     private void savePrompt(JsonObject request) {
@@ -1356,7 +1353,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var settings = CodexSettingsState.getInstance().getState();
         var instructions = new ArrayList<String>();
         if (!settings.globalInstructions.isBlank()) instructions.add(settings.globalInstructions.trim());
-        var projectInstructions = CodexProjectSettingsState.getInstance(project).getState().projectInstructions;
+        var projectInstructions = sharedInstructions(settings);
         if (!projectInstructions.isBlank()) instructions.add(projectInstructions.trim());
         settings.agents.stream()
             .filter(agent -> Objects.equals(agent.id, settings.activeAgentId))
@@ -1369,6 +1366,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void publishSettings() {
         var settings = CodexSettingsState.getInstance().getState();
+        var instructions = sharedInstructions(settings);
         var state = new JsonObject();
         state.addProperty("model", settings.model);
         state.addProperty("effort", settings.reasoningEffort);
@@ -1376,17 +1374,27 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("approval", settings.approvalPolicy);
         state.addProperty("sandbox", settings.sandboxMode);
         state.addProperty("streamResponses", settings.streamResponses);
-        state.addProperty("showReasoning", settings.showReasoning);
         addBehaviorSettings(state, settings);
         state.addProperty("globalInstructions", settings.globalInstructions);
+        state.addProperty("projectInstructions", instructions);
         state.addProperty("activePromptId", settings.activePromptId);
         state.add("prompts", promptsJson(settings.prompts));
-        state.addProperty("projectInstructions", CodexProjectSettingsState.getInstance(project).getState().projectInstructions);
         state.addProperty("activeAgentId", settings.activeAgentId);
         state.add("agents", agentsJson(settings.agents));
         var event = event("bootstrap");
         event.add("state", state);
         sendEvent(event);
+    }
+
+    private String sharedInstructions(CodexSettingsState.StateData settings) {
+        if (!settings.projectInstructions.isBlank()) return settings.projectInstructions;
+
+        var projectInstructions = CodexProjectSettingsState.getInstance(project).getState().projectInstructions;
+        if (projectInstructions.isBlank()) return "";
+
+        settings.projectInstructions = projectInstructions.trim();
+        CodexProjectSettingsState.getInstance(project).getState().projectInstructions = "";
+        return settings.projectInstructions;
     }
 
     private void compactCurrentThread() {
@@ -1803,9 +1811,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "item/started" -> renderStartedItem(params.getAsJsonObject("item"));
             case "item/completed" -> renderCompletedItem(params.getAsJsonObject("item"));
             case "item/agentMessage/delta" -> appendDelta(params, ConversationEntry.Kind.ASSISTANT, "Codex");
-            case "item/reasoning/summaryTextDelta", "item/reasoning/textDelta" -> {
-                if (CodexSettingsState.getInstance().getState().showReasoning) appendDelta(params, ConversationEntry.Kind.REASONING, "推理");
-            }
             case "item/plan/delta" -> appendDelta(params, ConversationEntry.Kind.PLAN, "计划");
             case "item/commandExecution/outputDelta" -> appendDelta(params, ConversationEntry.Kind.COMMAND, "命令");
             case "item/fileChange/outputDelta" -> {
@@ -1872,11 +1877,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             && !Objects.equals(type, "fileChange")) return;
         switch (type) {
             case "agentMessage" -> replaceEntry(id, ConversationEntry.Kind.ASSISTANT, "Codex", "");
-            case "reasoning" -> {
-                if (CodexSettingsState.getInstance().getState().showReasoning) replaceEntry(id, ConversationEntry.Kind.REASONING, "推理", "");
-            }
             case "plan" -> replaceEntry(id, ConversationEntry.Kind.PLAN, "计划", "");
-            case "commandExecution" -> replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", "$ " + string(item, "command", ""));
+            case "commandExecution" -> replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", "$ " + string(item, "command", "") + "\n\n");
             case "mcpToolCall" -> replaceEntry(id, ConversationEntry.Kind.MCP, "MCP 工具", string(item, "server", "") + " / " + string(item, "tool", ""));
             case "fileChange" -> updateFileChangeDiffs(item);
             default -> {
@@ -1892,15 +1894,17 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 if (pendingUserBody == null) addEntry(new ConversationEntry(ConversationEntry.Kind.USER, "你", userMessageText(array(item, "content")), id));
             }
             case "agentMessage" -> replaceEntry(id, ConversationEntry.Kind.ASSISTANT, "Codex", string(item, "text", ""));
-            case "reasoning" -> {
-                if (CodexSettingsState.getInstance().getState().showReasoning) replaceEntry(id, ConversationEntry.Kind.REASONING, "推理", joinStrings(array(item, "summary")));
-            }
             case "plan" -> replaceEntry(id, ConversationEntry.Kind.PLAN, "计划", string(item, "text", ""));
             case "commandExecution" -> {
                 var body = new StringBuilder("$ ").append(string(item, "command", ""));
                 var output = string(item, "aggregatedOutput", "");
                 if (!output.isBlank()) body.append("\n\n").append(output);
-                if (item.has("exitCode") && !item.get("exitCode").isJsonNull()) body.append("\n\n退出码：").append(item.get("exitCode").getAsInt());
+                var hasExitCode = item.has("exitCode") && !item.get("exitCode").isJsonNull();
+                var exitCode = hasExitCode ? item.get("exitCode").getAsInt() : 0;
+                if (hasExitCode) body.append("\n\n退出码：").append(exitCode);
+                var status = string(item, "status", "");
+                if (status.isBlank()) status = !hasExitCode || exitCode == 0 ? "completed" : "failed";
+                body.append("\n\n执行状态：").append(status);
                 replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", body.toString());
             }
             case "mcpToolCall" -> replaceEntry(id, ConversationEntry.Kind.MCP, "MCP 工具", string(item, "server", "") + " / " + string(item, "tool", "") + "\n状态：" + string(item, "status", ""));
@@ -2133,7 +2137,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             var input = element.getAsJsonObject();
             var part = switch (string(input, "type", "")) {
                 case "text" -> string(input, "text", "");
-                case "mention" -> "@" + string(input, "path", string(input, "name", "文件"));
+                case "mention" -> "@" + mentionPath(string(input, "path", string(input, "name", "文件")));
                 case "localImage", "image" -> "[图片] " + string(input, "path", "");
                 case "skill" -> "[Skill] " + string(input, "name", "");
                 default -> "";
@@ -2143,6 +2147,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             result.append(part);
         }
         return result.toString();
+    }
+
+    private String mentionPath(String rawPath) {
+        var path = droppedPath(rawPath);
+        return path == null ? rawPath : absolutePath(path);
     }
 
     @Override

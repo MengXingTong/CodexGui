@@ -1808,7 +1808,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             }
             case "item/plan/delta" -> appendDelta(params, ConversationEntry.Kind.PLAN, "计划");
             case "item/commandExecution/outputDelta" -> appendDelta(params, ConversationEntry.Kind.COMMAND, "命令");
-            case "item/fileChange/outputDelta", "item/fileChange/patchUpdated" -> changeService.rescanAsync();
+            case "item/fileChange/outputDelta" -> {
+                // 旧版文本输出事件不携带结构化文件 diff，忽略它避免重复捕获。
+            }
+            case "item/fileChange/patchUpdated" -> updateFileChangeDiffs(params);
             case "turn/diff/updated" -> changeService.updateServerDiff(string(params, "diff", ""));
             case "thread/tokenUsage/updated" -> publishTokenUsage(params);
             case "skills/changed" -> publishSkills(false);
@@ -1875,7 +1878,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "plan" -> replaceEntry(id, ConversationEntry.Kind.PLAN, "计划", "");
             case "commandExecution" -> replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", "$ " + string(item, "command", ""));
             case "mcpToolCall" -> replaceEntry(id, ConversationEntry.Kind.MCP, "MCP 工具", string(item, "server", "") + " / " + string(item, "tool", ""));
-            case "fileChange" -> changeService.rescanAsync();
+            case "fileChange" -> updateFileChangeDiffs(item);
             default -> {
             }
         }
@@ -1901,7 +1904,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", body.toString());
             }
             case "mcpToolCall" -> replaceEntry(id, ConversationEntry.Kind.MCP, "MCP 工具", string(item, "server", "") + " / " + string(item, "tool", "") + "\n状态：" + string(item, "status", ""));
-            case "fileChange" -> changeService.rescanAsync();
+            case "fileChange" -> updateFileChangeDiffs(item);
             case "contextCompaction" -> addEntry(new ConversationEntry(ConversationEntry.Kind.NOTICE, "上下文整理", "Codex 已压缩当前会话上下文。", id));
             default -> {
             }
@@ -2047,6 +2050,19 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void asyncError(String title, Throwable throwable) {
         var error = throwable instanceof CompletionException && throwable.getCause() != null ? throwable.getCause() : throwable;
         addEntry(new ConversationEntry(ConversationEntry.Kind.ERROR, title, Objects.toString(error.getMessage(), error.toString()), null));
+    }
+
+    private void updateFileChangeDiffs(JsonObject object) {
+        // 结构化补丁事件只包含本次文件修改，逐项转交给修改捕获服务。
+        for (var element : array(object, "changes")) {
+            if (!element.isJsonObject()) continue;
+            var change = element.getAsJsonObject();
+            changeService.updateFileDiff(
+                string(change, "path", ""),
+                string(change, "kind", "update"),
+                string(change, "diff", "")
+            );
+        }
     }
 
     private JsonArray array(JsonObject object, String field) {

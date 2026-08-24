@@ -183,32 +183,10 @@ button { color: inherit; }
 .welcome h2 { margin: 2px 0 0; color: var(--text-strong); font-size: 17px; }
 .welcome p { max-width: 420px; margin: 0; font-size: 12px; }
 
-.status-panel { position: relative; flex: 0 0 auto; margin: 0 20px 8px; background: var(--bg); }
-.status-tabs { display: flex; align-items: center; overflow: auto hidden; padding: 5px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bar); font-size: 11px; }
-.status-tab { flex: 1 0 auto; min-height: 25px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 4px 8px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
-.status-tab svg { width: 13px; height: 13px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.status-tab + .status-tab { border-left: 1px solid var(--border); border-radius: 0 4px 4px 0; }
-.status-tab:hover, .status-tab.active { color: var(--text); background: var(--raised); }
-.change-stats { display: flex; gap: 4px; font: 600 10px var(--code-font); }
-.plus { color: var(--green); } .minus { color: var(--red); }
-.status-popover { position: absolute; z-index: 30; left: 0; right: 0; bottom: calc(100% + 4px); max-height: 300px; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--bar); box-shadow: 0 -4px 16px rgba(0,0,0,.25); }
-.status-popover-head { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
-.status-actions { display: flex; gap: 5px; }
 .text-btn { padding: 4px 8px; border: 1px solid var(--border-strong); border-radius: 4px; background: transparent; color: var(--muted); font-size: 11px; cursor: pointer; }
 .text-btn:hover { border-color: var(--accent); color: var(--text); background: rgba(0,127,212,.08); }
 .text-btn.danger:hover { border-color: var(--red); color: var(--red); background: rgba(255,107,107,.08); }
 .text-btn:disabled { opacity: .35; pointer-events: none; }
-.change-list { overflow: auto; }
-.change-row { min-height: 38px; display: grid; grid-template-columns: 17px minmax(0,1fr) auto auto; align-items: center; gap: 7px; padding: 6px 9px; border-bottom: 1px solid rgba(255,255,255,.04); }
-.change-row:hover { background: rgba(255,255,255,.035); }
-.change-kind { width: 17px; height: 17px; display: grid; place-items: center; border-radius: 3px; font: 600 10px var(--code-font); }
-.change-kind.added { color: var(--green); background: rgba(137,209,133,.1); }
-.change-kind.modified { color: var(--orange); background: rgba(215,186,125,.1); }
-.change-kind.deleted { color: var(--red); background: rgba(255,107,107,.1); }
-.change-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font: 11px var(--code-font); cursor: pointer; }
-.change-buttons { display: flex; gap: 2px; }
-.mini-btn { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
-.mini-btn:hover { color: var(--text); background: var(--hover); }
 .empty-panel { padding: 22px; color: var(--muted); text-align: center; }
 
 .input-area { flex: 0 0 auto; padding: 9px 8px 8px; border-top: 1px solid var(--raised); background: var(--bg); }
@@ -343,7 +321,6 @@ button { color: inherit; }
   .anchor-rail { display: none; }
   .messages.has-rail { padding-left: 0; }
   .message { padding-left: 14px; padding-right: 14px; }
-  .status-panel { margin-left: 12px; margin-right: 12px; }
   .selector { max-width: 92px; }
   .page-toolbar, .history-item, .settings { padding-left: 14px; padding-right: 14px; }
   .setting-row { grid-template-columns: 1fr; }
@@ -517,7 +494,6 @@ button { color: inherit; }
 /* 亮色主题统一提高正文、图标、边框和交互状态的对比度。 */
 [data-theme="light"] .message,
 [data-theme="light"] .history-item,
-[data-theme="light"] .change-row,
 [data-theme="light"] .integration-row,
 [data-theme="light"] .dependency-list > div,
 [data-theme="light"] .inventory-row { border-color: var(--separator); }

@@ -14,7 +14,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.Consumer;
 
 @Service(Service.Level.PROJECT)
@@ -22,11 +23,9 @@ public final class WorkspaceChangeService {
     private static final long MAX_CAPTURE_BYTES = 5L * 1024L * 1024L;
 
     private final Path root;
-    private final CopyOnWriteArrayList<Consumer<List<ChangeEntry>>> listeners = new CopyOnWriteArrayList<>();
-    private final AtomicInteger activeCaptures = new AtomicInteger();
-
-    private volatile List<ChangeEntry> changes = List.of();
-    private volatile boolean captureActive;
+    private final CopyOnWriteArrayList<Consumer<ChangeUpdate>> listeners = new CopyOnWriteArrayList<>();
+    private final Map<String, List<ChangeEntry>> changesBySession = new HashMap<>();
+    private final Map<String, Integer> activeCapturesBySession = new HashMap<>();
 
     public WorkspaceChangeService(Project project) {
         this.root = project.getBasePath() == null ? Path.of(".").toAbsolutePath().normalize()
@@ -41,26 +40,27 @@ public final class WorkspaceChangeService {
         return root;
     }
 
-    public List<ChangeEntry> getChanges() {
-        return changes;
+    public synchronized List<ChangeEntry> getChanges(String sessionId) {
+        return changesBySession.getOrDefault(sessionKey(sessionId), List.of());
     }
 
-    public void addListener(Consumer<List<ChangeEntry>> listener) {
+    public void addListener(Consumer<ChangeUpdate> listener) {
         listeners.addIfAbsent(listener);
     }
 
-    public void removeListener(Consumer<List<ChangeEntry>> listener) {
+    public void removeListener(Consumer<ChangeUpdate> listener) {
         listeners.remove(listener);
     }
 
-    public synchronized CompletableFuture<Void> beginCaptureAsync() {
-        activeCaptures.incrementAndGet();
-        captureActive = true;
+    public synchronized CompletableFuture<Void> beginCaptureAsync(String sessionId) {
+        var key = sessionKey(sessionId);
+        activeCapturesBySession.merge(key, 1, Integer::sum);
         return CompletableFuture.completedFuture(null);
     }
 
-    public void updateServerDiff(String unifiedDiff) {
-        if (!captureActive || unifiedDiff == null || unifiedDiff.isBlank()) return;
+    public synchronized void updateServerDiff(String sessionId, String unifiedDiff) {
+        var key = sessionKey(sessionId);
+        if (activeCapturesBySession.getOrDefault(key, 0) == 0 || unifiedDiff == null || unifiedDiff.isBlank()) return;
 
         // 只读取 Codex 协议明确报告过的文件，不再扫描项目目录。
         var afterContents = new LinkedHashMap<String, byte[]>();
@@ -71,7 +71,7 @@ public final class WorkspaceChangeService {
         }
 
         var next = new LinkedHashMap<Path, ChangeEntry>();
-        for (var change : changes) next.put(change.path(), change);
+        for (var change : changesBySession.getOrDefault(key, List.of())) next.put(change.path(), change);
         for (var fileDiff : UnifiedDiffParser.parse(unifiedDiff, afterContents)) {
             var target = resolveReportedPath(fileDiff.path());
             if (target == null) continue;
@@ -91,47 +91,64 @@ public final class WorkspaceChangeService {
                 fileDiff.unifiedDiff()
             ));
         }
-        changes = List.copyOf(next.values());
-        fireChanged();
+        changesBySession.put(key, List.copyOf(next.values()));
+        fireChanged(key);
     }
 
-    public void updateFileDiff(String relativePath, String kind, String diff) {
-        if (!captureActive || relativePath == null || relativePath.isBlank() || diff == null || diff.isBlank()) return;
+    public synchronized void updateFileDiff(String sessionId, String relativePath, String kind, String diff) {
+        var key = sessionKey(sessionId);
+        if (activeCapturesBySession.getOrDefault(key, 0) == 0 || relativePath == null || relativePath.isBlank() || diff == null || diff.isBlank()) return;
         var header = "diff --git a/" + relativePath + " b/" + relativePath + "\n";
         var normalizedDiff = diff.startsWith("diff --git ") ? diff : switch (kind) {
             case "add" -> header + "new file mode 100644\n--- /dev/null\n+++ b/" + relativePath + "\n" + diff;
             case "delete" -> header + "deleted file mode 100644\n--- a/" + relativePath + "\n+++ /dev/null\n" + diff;
             default -> header + "--- a/" + relativePath + "\n+++ b/" + relativePath + "\n" + diff;
         };
-        updateServerDiff(normalizedDiff);
+        updateServerDiff(key, normalizedDiff);
     }
 
-    public synchronized CompletableFuture<Void> finishCaptureAsync() {
-        var remaining = activeCaptures.updateAndGet(value -> Math.max(0, value - 1));
-        if (remaining == 0) captureActive = false;
+    public synchronized CompletableFuture<Void> finishCaptureAsync(String sessionId) {
+        var key = sessionKey(sessionId);
+        var remaining = Math.max(0, activeCapturesBySession.getOrDefault(key, 0) - 1);
+        if (remaining == 0) activeCapturesBySession.remove(key);
+        else activeCapturesBySession.put(key, remaining);
         return CompletableFuture.completedFuture(null);
     }
 
-    public void accept(ChangeEntry entry) {
-        changes = changes.stream().filter(change -> !change.path().equals(entry.path())).toList();
-        fireChanged();
+    public synchronized void confirmSession(String sessionId) {
+        var key = sessionKey(sessionId);
+        activeCapturesBySession.remove(key);
+        changesBySession.remove(key);
+        fireChanged(key);
     }
 
-    public void acceptAll() {
-        changes = List.of();
-        fireChanged();
+    public synchronized void accept(String sessionId, ChangeEntry entry) {
+        var key = sessionKey(sessionId);
+        changesBySession.put(key, changesBySession.getOrDefault(key, List.of()).stream()
+            .filter(change -> !change.path().equals(entry.path())).toList());
+        fireChanged(key);
     }
 
-    public void revert(ChangeEntry entry) throws IOException {
+    public synchronized void acceptAll(String sessionId) {
+        var key = sessionKey(sessionId);
+        changesBySession.remove(key);
+        fireChanged(key);
+    }
+
+    public synchronized void revert(String sessionId, ChangeEntry entry) throws IOException {
         if (!entry.reversible()) throw new IOException("该文件缺少 Codex 修改前内容，无法安全撤销");
         restore(entry);
-        changes = changes.stream().filter(change -> !change.path().equals(entry.path())).toList();
+        var key = sessionKey(sessionId);
+        changesBySession.put(key, changesBySession.getOrDefault(key, List.of()).stream()
+            .filter(change -> !change.path().equals(entry.path())).toList());
         refresh(entry.path());
-        fireChanged();
+        fireChanged(key);
     }
 
-    public void revertAll() throws IOException {
+    public synchronized void revertAll(String sessionId) throws IOException {
+        var key = sessionKey(sessionId);
         var failures = new ArrayList<String>();
+        var changes = changesBySession.getOrDefault(key, List.of());
         for (var entry : List.copyOf(changes)) {
             if (!entry.reversible()) {
                 failures.add(entry.path().toString());
@@ -144,9 +161,13 @@ public final class WorkspaceChangeService {
                 failures.add(entry.path() + "（" + error.getMessage() + "）");
             }
         }
-        changes = changes.stream().filter(change -> failures.stream()
-            .anyMatch(text -> text.startsWith(change.path().toString()))).toList();
-        fireChanged();
+        var remaining = new ArrayList<ChangeEntry>();
+        for (var change : changes) {
+            var failed = failures.stream().anyMatch(text -> text.startsWith(change.path().toString()));
+            if (failed) remaining.add(change);
+        }
+        changesBySession.put(key, List.copyOf(remaining));
+        fireChanged(key);
         if (!failures.isEmpty()) throw new IOException("以下文件无法撤销：\n" + String.join("\n", failures));
     }
 
@@ -182,9 +203,15 @@ public final class WorkspaceChangeService {
         LocalFileSystem.getInstance().refreshIoFiles(List.of(path.toFile()), true, false, null);
     }
 
-    private void fireChanged() {
-        var snapshot = changes;
+    private void fireChanged(String sessionId) {
+        var snapshot = new ChangeUpdate(sessionId, changesBySession.getOrDefault(sessionId, List.of()));
         com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(() ->
             listeners.forEach(listener -> listener.accept(snapshot)));
     }
+
+    private String sessionKey(String sessionId) {
+        return sessionId == null || sessionId.isBlank() ? "default" : sessionId;
+    }
+
+    public record ChangeUpdate(String sessionId, List<ChangeEntry> changes) {}
 }

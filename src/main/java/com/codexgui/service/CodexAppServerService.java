@@ -110,7 +110,7 @@ public final class CodexAppServerService implements Disposable {
             var clientInfo = new JsonObject();
             clientInfo.addProperty("name", "codex-gui-jetbrains");
             clientInfo.addProperty("title", "Codex GUI for JetBrains");
-            clientInfo.addProperty("version", "0.3.0");
+            clientInfo.addProperty("version", "0.4.0");
             var params = new JsonObject();
             params.add("clientInfo", clientInfo);
             params.add("capabilities", capabilities);

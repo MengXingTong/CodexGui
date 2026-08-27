@@ -4,7 +4,7 @@
   };
   const state = {
     view: 'chat', connected: false, busy: false, busyStartedAt: 0, generationAssistantItemId: '', generationStartedMessageCount: 0, title: '新会话', threadId: null, sessionId: 'default',
-    tabs: [{id:'default', title:'新会话', threadId:null, busy:false, busyStartedAt:0, generationAssistantItemId:'', generationStartedMessageCount:0, messages:[], attachments:[], fileReferences:[], usagePercentage:0, usageUsedTokens:0, usageMaxTokens:0, promptSnapshot:[]}],
+    tabs: [{id:'default', title:'新会话', threadId:null, busy:false, busyStartedAt:0, generationAssistantItemId:'', generationStartedMessageCount:0, messages:[], attachments:[], fileReferences:[], changes:[], usagePercentage:0, usageUsedTokens:0, usageMaxTokens:0, promptSnapshot:[]}],
     messages: [], history: [], changes: [], attachments: [], fileReferences: [], models: [], mcpServers: [], skills: [], skillErrors: [],
     model: '', effort: 'high', approval: 'on-request', sandbox: 'workspace-write', serviceTier: 'standard',
     streamResponses: true, globalInstructions: '', projectInstructions: '',
@@ -34,19 +34,21 @@
   let promptComposing = false;
   let pendingPromptReferenceSync = false;
   let fileReferenceDropCaret = null;
+  const closedSessionIds = new Set();
 
-  const tabStateKeys = ['title','threadId','busy','busyStartedAt','generationAssistantItemId','generationStartedMessageCount','messages','attachments','fileReferences','usagePercentage','usageUsedTokens','usageMaxTokens'];
+  const tabStateKeys = ['title','threadId','busy','busyStartedAt','generationAssistantItemId','generationStartedMessageCount','messages','attachments','fileReferences','changes','usagePercentage','usageUsedTokens','usageMaxTokens'];
   function activeTab(){return state.tabs.find(tab=>tab.id===state.sessionId)||state.tabs[0];}
   function snapshotTab(tab=activeTab()){if(!tab)return;tabStateKeys.forEach(key=>{tab[key]=state[key];});const prompt=document.getElementById('prompt');if(prompt)tab.promptSnapshot=promptSnapshot(prompt);}
   function restoreTab(tab){if(!tab)return;state.sessionId=tab.id;tabStateKeys.forEach(key=>{state[key]=tab[key];});}
-  function ensureTab(id,title){let tab=state.tabs.find(item=>item.id===id);if(!tab){tab={id,title:title||'新会话',threadId:null,busy:false,busyStartedAt:0,generationAssistantItemId:'',generationStartedMessageCount:0,messages:[],attachments:[],fileReferences:[],usagePercentage:0,usageUsedTokens:0,usageMaxTokens:0,promptSnapshot:[]};state.tabs.push(tab);}if(title&&tab.title==='新会话')tab.title=title;return tab;}
+  function ensureTab(id,title){let tab=state.tabs.find(item=>item.id===id);if(!tab){tab={id,title:title||'新会话',threadId:null,busy:false,busyStartedAt:0,generationAssistantItemId:'',generationStartedMessageCount:0,messages:[],attachments:[],fileReferences:[],changes:[],usagePercentage:0,usageUsedTokens:0,usageMaxTokens:0,promptSnapshot:[]};state.tabs.push(tab);}if(title&&tab.title==='新会话')tab.title=title;return tab;}
   function newSessionId(){return `session-${Date.now()}-${Math.random().toString(36).slice(2,8)}`;}
   function nextSessionTitle(){const numbers=state.tabs.map(tab=>{const match=/^新会话(?: (\d+))?$/.exec(String(tab.title||''));return match?(match[1]?Number(match[1]):1):0;});const next=Math.max(1,...numbers)+1;return `新会话 ${next}`;}
   function renderTab(tab){render(false);const prompt=document.getElementById('prompt');if(prompt){restorePromptSnapshot(prompt,tab.promptSnapshot);resizePrompt(prompt);}if(state.view==='chat')requestAnimationFrame(scrollBottom);}
   function selectTab(id,notify=true){if(id===state.sessionId){state.tabMenu=null;return;}snapshotTab();const tab=ensureTab(id);restoreTab(tab);state.view='chat';state.openMenu=null;state.tabMenu=null;state.composerMenu=false;state.agentMenuOpen=false;if(notify)post('activateSession',{sessionId:id});renderTab(tab);}
-  function closeSession(id){const target=state.tabs.find(tab=>tab.id===id);if(!target)return;if(target.busy){showToast('运行中的页签不能关闭');return;}if(state.tabs.length<=1){closeAllSessions();return;}const index=state.tabs.findIndex(tab=>tab.id===id);state.tabs.splice(index,1);state.tabMenu=null;if(id===state.sessionId){const next=state.tabs[Math.max(0,index-1)]||state.tabs[0];restoreTab(next);post('activateSession',{sessionId:next.id});renderTab(next);return;}render();}
-  function closeOtherSessions(id){const keep=state.tabs.find(tab=>tab.id===id)||activeTab();const busy=state.tabs.filter(tab=>tab.id!==keep.id&&tab.busy);state.tabs=state.tabs.filter(tab=>tab.id===keep.id||tab.busy);state.tabMenu=null;if(busy.length)showToast(`${busy.length} 个运行中的页签已保留`);if(state.sessionId!==keep.id)selectTab(keep.id);else render();}
-  function closeAllSessions(){const busy=state.tabs.filter(tab=>tab.busy);state.tabMenu=null;if(busy.length){state.tabs=busy;if(!state.tabs.some(tab=>tab.id===state.sessionId)){restoreTab(state.tabs[0]);post('activateSession',{sessionId:state.sessionId});}showToast(`${busy.length} 个运行中的页签已保留`);render();return;}const id=newSessionId(),title=nextSessionTitle();state.tabs=[];const tab=ensureTab(id,title);restoreTab(tab);state.view='chat';post('new',{sessionId:id,title,skipConfirmation:true});renderTab(tab);}
+  function confirmClosedSession(id){if(!id)return;closedSessionIds.add(id);post('closeSession',{sessionId:id});}
+  function closeSession(id){const target=state.tabs.find(tab=>tab.id===id);if(!target)return;if(target.busy){showToast('运行中的页签不能关闭');return;}if(state.tabs.length<=1){closeAllSessions();return;}confirmClosedSession(id);const index=state.tabs.findIndex(tab=>tab.id===id);state.tabs.splice(index,1);state.tabMenu=null;if(id===state.sessionId){const next=state.tabs[Math.max(0,index-1)]||state.tabs[0];restoreTab(next);post('activateSession',{sessionId:next.id});renderTab(next);return;}render();}
+  function closeOtherSessions(id){const keep=state.tabs.find(tab=>tab.id===id)||activeTab();const busy=state.tabs.filter(tab=>tab.id!==keep.id&&tab.busy);state.tabs.filter(tab=>tab.id!==keep.id&&!tab.busy).forEach(tab=>confirmClosedSession(tab.id));state.tabs=state.tabs.filter(tab=>tab.id===keep.id||tab.busy);state.tabMenu=null;if(busy.length)showToast(`${busy.length} 个运行中的页签已保留`);if(state.sessionId!==keep.id)selectTab(keep.id);else render();}
+  function closeAllSessions(){const busy=state.tabs.filter(tab=>tab.busy);state.tabMenu=null;if(busy.length){state.tabs.filter(tab=>!tab.busy).forEach(tab=>confirmClosedSession(tab.id));state.tabs=busy;if(!state.tabs.some(tab=>tab.id===state.sessionId)){restoreTab(state.tabs[0]);post('activateSession',{sessionId:state.sessionId});}showToast(`${busy.length} 个运行中的页签已保留`);render();return;}state.tabs.forEach(tab=>confirmClosedSession(tab.id));const id=newSessionId(),title=nextSessionTitle();state.tabs=[];const tab=ensureTab(id,title);restoreTab(tab);state.view='chat';post('new',{sessionId:id,title,skipConfirmation:true});renderTab(tab);}
   function startNewSession(title=nextSessionTitle()){snapshotTab();closeFileCompletion();state.fileReferenceMenu=null;pendingFileDropOffset=null;pendingFileDropCount=0;const id=newSessionId();const tab=ensureTab(id,title);restoreTab(tab);state.view='chat';state.openMenu=null;state.tabMenu=null;state.composerMenu=false;state.agentMenuOpen=false;state.newConversationConfirm=null;post('new',{sessionId:id,title,skipConfirmation:true});renderTab(tab);}
   function startNewConversation(){
     const tab=activeTab();
@@ -66,6 +68,7 @@
     tab.messages=[];
     tab.attachments=[];
     tab.fileReferences=[];
+    tab.changes=[];
     tab.usagePercentage=0;
     tab.usageUsedTokens=0;
     tab.usageMaxTokens=0;
@@ -528,6 +531,7 @@
     const parsed=typeof event==='string'?JSON.parse(event):event;
     if(parsed?.type==='nativeDrag'){receiveSessionEvent(event);return;}
     const sessionId=parsed?.sessionId||parsed?.state?.sessionId||'default',previousId=state.sessionId;
+    if(closedSessionIds.has(sessionId))return;
     snapshotTab();
     // 只有会话级事件才能初始化页签标题，消息事件的 title 是条目标题（例如“命令”）。
     const sessionTitle=parsed?.state?.title||(['bootstrap','clear','thread'].includes(parsed?.type)?parsed?.title:'');

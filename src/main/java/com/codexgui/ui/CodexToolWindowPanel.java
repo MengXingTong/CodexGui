@@ -88,7 +88,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private List<Attachment> attachments = new ArrayList<>();
     private List<FileReference> fileReferences = new ArrayList<>();
     private List<ConversationEntry> transcript = new ArrayList<>();
-    private final Consumer<List<ChangeEntry>> changeListener;
+    private final Consumer<WorkspaceChangeService.ChangeUpdate> changeListener;
     private final JBCefBrowser browser;
     private final JBCefJSQuery bridge;
 
@@ -103,6 +103,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private final Map<String, StringBuilder> pendingCommandDeltas = new ConcurrentHashMap<>();
     private final java.util.Set<String> scheduledCommandDeltas = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> completedCommandItems = ConcurrentHashMap.newKeySet();
+    private final java.util.Set<String> confirmedSessionIds = ConcurrentHashMap.newKeySet();
     private static final class SessionState {
         private String threadId;
         private String turnId;
@@ -132,7 +133,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         this.codex = CodexAppServerService.getInstance(project);
         this.changeService = WorkspaceChangeService.getInstance(project);
         sessions.put(activeSessionId, new SessionState(activeSessionId));
-        this.changeListener = this::publishChanges;
+        this.changeListener = update -> publishChanges(update.sessionId(), update.changes());
 
         if (!JBCefApp.isSupported()) {
             browser = null;
@@ -217,7 +218,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
         var action = string(request, "action", "");
         ApplicationManager.getApplication().invokeLater(() -> {
-            activateSession(string(request, "sessionId", activeSessionId));
+            // 关闭会话只确认目标事务，不切换活动会话，避免批量关闭后活动指针落在已关闭页签。
+            if (!Objects.equals(action, "closeSession")) activateSession(string(request, "sessionId", activeSessionId));
             switch (action) {
                 case "ready" -> bootstrap();
                 case "reconnect" -> codex.restart().thenRun(this::loadModels).exceptionally(error -> {
@@ -227,6 +229,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "send" -> sendInput(string(request, "text", ""));
                 case "stop" -> interruptCurrentTurn();
                 case "new" -> newConversation(string(request, "title", ""), bool(request, "skipConfirmation", false));
+                case "closeSession" -> closeSession(string(request, "sessionId", ""));
                 case "activateSession" -> publishCurrentSession();
                 case "history" -> loadHistory(string(request, "search", ""));
                 case "openThread" -> openThread(string(request, "id", ""));
@@ -324,7 +327,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         event.add("state", state);
         sendEvent(event);
         transcript.forEach(this::publishEntry);
-        publishChanges(changeService.getChanges());
+        publishChanges(activeSessionId, changeService.getChanges(activeSessionId));
         publishSkills(false);
         // 页面可能晚于 CLI 连接完成，准备完成后重新请求模型，避免模型事件丢失。
         loadModels();
@@ -373,7 +376,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         transcript.forEach(this::publishEntry);
         publishAttachments();
         publishFileReferences();
-        publishChanges(changeService.getChanges());
+        publishChanges(activeSessionId, changeService.getChanges(activeSessionId));
         publishThread();
         var usage = event("usage");
         usage.addProperty("usedTokens", usageUsedTokens);
@@ -416,7 +419,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         publishFileReferences();
         setBusy(true);
 
-        var capture = changeService.beginCaptureAsync().thenCompose(ignored -> currentThreadId == null
+        var capture = changeService.beginCaptureAsync(sessionId).thenCompose(ignored -> currentThreadId == null
             ? codex.startThread(
                 settings.model,
                 settings.reasoningEffort,
@@ -443,7 +446,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             if (turn != null && turn.has("id")) currentTurnId = turn.get("id").getAsString();
             saveActiveSession();
         }).exceptionally(error -> {
-            changeService.finishCaptureAsync();
+            changeService.finishCaptureAsync(sessionId);
             activateSession(sessionId);
             setBusy(false);
             asyncError("无法发送消息", error);
@@ -575,6 +578,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             && Messages.showYesNoDialog(project, "当前会话已有消息，确定要新建会话吗？", "新建会话", "新建", "取消", Messages.getQuestionIcon()) != Messages.YES) {
             return;
         }
+        // 复用页签开启新对话时，旧回合的修改视为用户已确认，不再参与后续冲突判断。
+        confirmedSessionIds.remove(activeSessionId);
+        changeService.confirmSession(activeSessionId);
         // 新建会话时重置线程和输入上下文，避免旧附件或草稿带入新对话。
         currentThreadId = null;
         currentTurnId = null;
@@ -586,6 +592,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         publishAttachments();
         publishFileReferences();
         publishThread();
+    }
+
+    private void closeSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return;
+        // 页签关闭代表用户确认保留该会话的工作区修改，清理其待处理事务。
+        confirmedSessionIds.add(sessionId);
+        changeService.confirmSession(sessionId);
     }
 
     private void clearConversation() {
@@ -1065,6 +1078,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void publishChanges(List<ChangeEntry> changes) {
+        publishChanges(activeSessionId, changes);
+    }
+
+    private void publishChanges(String sessionId, List<ChangeEntry> changes) {
         var items = new JsonArray();
         for (var change : changes) {
             var item = new JsonObject();
@@ -1075,24 +1092,25 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             items.add(item);
         }
         var event = event("changes");
+        event.addProperty("sessionId", sessionId);
         event.add("items", items);
         sendEvent(event);
     }
 
     private ChangeEntry changeAt(int index) {
-        var changes = changeService.getChanges();
+        var changes = changeService.getChanges(activeSessionId);
         return index >= 0 && index < changes.size() ? changes.get(index) : null;
     }
 
     private void acceptAllChanges() {
         // 空列表直接结束，避免把无意义的全量扫描提交到界面线程。
-        if (changeService.getChanges().isEmpty()) return;
-        changeService.acceptAll();
+        if (changeService.getChanges(activeSessionId).isEmpty()) return;
+        changeService.acceptAll(activeSessionId);
     }
 
     private void acceptChange(int index) {
         var change = changeAt(index);
-        if (change != null) changeService.accept(change);
+        if (change != null) changeService.accept(activeSessionId, change);
     }
 
     private void revertChange(int index) {
@@ -1100,17 +1118,17 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (change == null) return;
         if (Messages.showYesNoDialog(project, "撤销 Codex 对该文件的全部修改？\n\n" + change.path(), "撤销文件修改", "撤销", "取消", Messages.getWarningIcon()) != Messages.YES) return;
         try {
-            changeService.revert(change);
+            changeService.revert(activeSessionId, change);
         } catch (IOException error) {
             Messages.showErrorDialog(project, error.getMessage(), "无法撤销修改");
         }
     }
 
     private void revertAllChanges() {
-        if (changeService.getChanges().isEmpty()) return;
+        if (changeService.getChanges(activeSessionId).isEmpty()) return;
         if (Messages.showYesNoDialog(project, "撤销当前回合捕获的全部文件修改？", "撤销全部修改", "全部撤销", "取消", Messages.getWarningIcon()) != Messages.YES) return;
         try {
-            changeService.revertAll();
+            changeService.revertAll(activeSessionId);
         } catch (IOException error) {
             Messages.showErrorDialog(project, error.getMessage(), "部分文件无法撤销");
         }
@@ -1830,7 +1848,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 notificationThreadId = string(params.getAsJsonObject("item"), "threadId", "");
             }
         }
-        activateSessionForThread(notificationThreadId);
+        var routedSessionId = activateSessionForThread(notificationThreadId);
+        // 缺少线程标识的通知只能归入当前会话；无法匹配线程的事件不得误投到当前页签。
+        var eventSessionId = routedSessionId == null && notificationThreadId.isBlank() ? activeSessionId : routedSessionId;
+        if (eventSessionId == null) return;
         switch (method) {
             case "turn/started" -> {
                 var turn = params.getAsJsonObject("turn");
@@ -1845,8 +1866,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "item/fileChange/outputDelta" -> {
                 // 旧版文本输出事件不携带结构化文件 diff，忽略它避免重复捕获。
             }
-            case "item/fileChange/patchUpdated" -> updateFileChangeDiffs(params);
-            case "turn/diff/updated" -> changeService.updateServerDiff(string(params, "diff", ""));
+            case "item/fileChange/patchUpdated" -> updateFileChangeDiffs(eventSessionId, params);
+            case "turn/diff/updated" -> changeService.updateServerDiff(eventSessionId, string(params, "diff", ""));
             case "thread/tokenUsage/updated" -> publishTokenUsage(params);
             case "skills/changed" -> publishSkills(false);
             case "mcpServer/startupStatus/updated" -> {
@@ -1861,7 +1882,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             }
             case "turn/completed" -> {
                 var completedActiveTurn = busy;
-                changeService.finishCaptureAsync();
+                changeService.finishCaptureAsync(eventSessionId);
                 currentTurnId = null;
                 pendingUserBody = null;
                 setBusy(false);
@@ -1878,14 +1899,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
     }
 
-    private void activateSessionForThread(String threadId) {
-        if (threadId == null || threadId.isBlank()) return;
+    private String activateSessionForThread(String threadId) {
+        if (threadId == null || threadId.isBlank()) return null;
         for (var entry : sessions.entrySet()) {
+            if (confirmedSessionIds.contains(entry.getKey())) continue;
             if (Objects.equals(entry.getValue().threadId, threadId)) {
                 activateSession(entry.getKey());
-                return;
+                return entry.getKey();
             }
         }
+        return null;
     }
 
     private void appendDelta(JsonObject params, ConversationEntry.Kind kind, String title) {
@@ -1933,7 +1956,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", "$ " + string(item, "command", "") + "\n\n");
             }
             case "mcpToolCall" -> replaceEntry(id, ConversationEntry.Kind.MCP, "MCP 工具", string(item, "server", "") + " / " + string(item, "tool", ""));
-            case "fileChange" -> updateFileChangeDiffs(item);
+            case "fileChange" -> updateFileChangeDiffs(activeSessionId, item);
             default -> {
             }
         }
@@ -1964,7 +1987,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", body.toString());
             }
             case "mcpToolCall" -> replaceEntry(id, ConversationEntry.Kind.MCP, "MCP 工具", string(item, "server", "") + " / " + string(item, "tool", "") + "\n状态：" + string(item, "status", ""));
-            case "fileChange" -> updateFileChangeDiffs(item);
+            case "fileChange" -> updateFileChangeDiffs(activeSessionId, item);
             case "contextCompaction" -> addEntry(new ConversationEntry(ConversationEntry.Kind.NOTICE, "上下文整理", "Codex 已压缩当前会话上下文。", id));
             default -> {
             }
@@ -2122,12 +2145,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         addEntry(new ConversationEntry(ConversationEntry.Kind.ERROR, title, Objects.toString(error.getMessage(), error.toString()), null));
     }
 
-    private void updateFileChangeDiffs(JsonObject object) {
+    private void updateFileChangeDiffs(String sessionId, JsonObject object) {
         // 结构化补丁事件只包含本次文件修改，逐项转交给修改捕获服务。
         for (var element : array(object, "changes")) {
             if (!element.isJsonObject()) continue;
             var change = element.getAsJsonObject();
             changeService.updateFileDiff(
+                sessionId,
                 string(change, "path", ""),
                 string(change, "kind", "update"),
                 string(change, "diff", "")

@@ -72,6 +72,8 @@ import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEventListener {
@@ -98,6 +100,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private boolean pageReady;
     private long usageUsedTokens;
     private long usageMaxTokens;
+    private final Map<String, StringBuilder> pendingCommandDeltas = new ConcurrentHashMap<>();
+    private final java.util.Set<String> scheduledCommandDeltas = ConcurrentHashMap.newKeySet();
+    private final java.util.Set<String> completedCommandItems = ConcurrentHashMap.newKeySet();
     private static final class SessionState {
         private String threadId;
         private String turnId;
@@ -221,7 +226,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 });
                 case "send" -> sendInput(string(request, "text", ""));
                 case "stop" -> interruptCurrentTurn();
-                case "new" -> newConversation(string(request, "title", ""));
+                case "new" -> newConversation(string(request, "title", ""), bool(request, "skipConfirmation", false));
                 case "activateSession" -> publishCurrentSession();
                 case "history" -> loadHistory(string(request, "search", ""));
                 case "openThread" -> openThread(string(request, "id", ""));
@@ -281,6 +286,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "answerQuestions" -> answerQuestions(request, false);
                 case "cancelQuestions" -> answerQuestions(request, true);
                 case "conversationSearch" -> searchConversation();
+                case "openFile" -> openFileLocation(request);
                 case "openUrl" -> BrowserUtil.browse(string(request, "url", ""));
                 case "openSettings" -> ShowSettingsUtil.getInstance().showSettingsDialog(project, "Codex GUI");
                 default -> {
@@ -558,21 +564,27 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void newConversation() {
-        newConversation("");
+        newConversation("", false);
     }
 
-    private void newConversation(String requestedTitle) {
+    private void newConversation(String requestedTitle, boolean skipConfirmation) {
         if (busy) return;
         var settings = CodexSettingsState.getInstance().getState();
-        if (settings.newSessionConfirmEnabled && !transcript.isEmpty()
+        // 命令入口未完成前端确认时，使用原生确认框保护已有会话。
+        if (!skipConfirmation && settings.newSessionConfirmEnabled && !transcript.isEmpty()
             && Messages.showYesNoDialog(project, "当前会话已有消息，确定要新建会话吗？", "新建会话", "新建", "取消", Messages.getQuestionIcon()) != Messages.YES) {
             return;
         }
-        // 新建会话时保留界面生成的序号，避免多个空白页签难以区分。
+        // 新建会话时重置线程和输入上下文，避免旧附件或草稿带入新对话。
         currentThreadId = null;
         currentTurnId = null;
         currentTitle = requestedTitle == null || requestedTitle.isBlank() ? "新会话" : requestedTitle.trim();
+        pendingUserBody = null;
+        attachments = new ArrayList<>();
+        fileReferences = new ArrayList<>();
         clearConversation();
+        publishAttachments();
+        publishFileReferences();
         publishThread();
     }
 
@@ -748,29 +760,24 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         for (var path : droppedPaths) {
             var normalized = path.toAbsolutePath().normalize();
             if (!Files.isRegularFile(normalized) && !Files.isDirectory(normalized)) continue;
+            // 图片继续作为附件插入，供发送前预览和移除。
             if (Files.isRegularFile(normalized) && isImageAttachment(normalized)) {
                 if (attachments.stream().anyMatch(item -> item.path().toAbsolutePath().normalize().equals(normalized))) continue;
                 attachments.add(new Attachment(Attachment.Kind.IMAGE, normalized.getFileName().toString(), normalized));
                 addedImages++;
                 continue;
             }
+            // 普通文件或目录作为引用标签插入，重复路径保持幂等。
             if (fileReferences.stream().anyMatch(item -> item.path().equals(normalized))) continue;
             fileReferences.add(FileReference.fromPath(normalized));
             addedReferences++;
         }
+        // 拖拽结果已经通过输入框标签或附件列表展示，不再弹出遮挡输入框的结果提示。
         if (addedReferences == 0 && addedImages == 0) {
-            toast("未能读取拖入的文件或目录");
             return;
         }
         if (addedReferences > 0) publishFileReferences();
         if (addedImages > 0) publishAttachments();
-        if (addedReferences > 0 && addedImages > 0) {
-            toast("已引用 " + addedReferences + " 个路径，并添加 " + addedImages + " 个图片附件");
-        } else if (addedReferences > 0) {
-            toast("已添加 " + addedReferences + " 个文件引用");
-        } else {
-            toast("已添加 " + addedImages + " 个图片附件");
-        }
     }
 
     private void publishProjectFiles(String query, long requestId) {
@@ -941,6 +948,28 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             new OpenFileDescriptor(project, file).navigate(true);
         } catch (RuntimeException error) {
             Messages.showErrorDialog(project, error.getMessage(), "打开 Skill 失败");
+        }
+    }
+
+    private void openFileLocation(JsonObject request) {
+        var rawPath = string(request, "path", "").trim();
+        if (rawPath.isBlank()) return;
+        var line = Math.max(1, integer(request, "line"));
+        var column = Math.max(1, integer(request, "column"));
+        try {
+            // 相对路径以当前项目为基准，绝对路径则直接使用 Codex 返回的位置。
+            var path = Path.of(rawPath);
+            if (!path.isAbsolute() && project.getBasePath() != null) path = Path.of(project.getBasePath()).resolve(path);
+            // 先刷新本地文件，再按用户可见的行列位置打开编辑器。
+            var file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path.normalize());
+            if (file == null) {
+                toast("无法打开文件：" + rawPath);
+                return;
+            }
+            new OpenFileDescriptor(project, file, line - 1, column - 1).navigate(true);
+        } catch (RuntimeException error) {
+            // 路径格式无效时给出提示，避免点击链接导致界面线程异常。
+            toast("无法打开文件：" + rawPath);
         }
     }
 
@@ -1862,7 +1891,28 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void appendDelta(JsonObject params, ConversationEntry.Kind kind, String title) {
         if (!CodexSettingsState.getInstance().getState().streamResponses) return;
         var delta = string(params, "delta", "");
-        if (!delta.isEmpty()) appendEntry(string(params, "itemId", fallbackId(kind)), kind, title, delta);
+        if (delta.isEmpty()) return;
+        var itemId = string(params, "itemId", fallbackId(kind));
+        if (kind != ConversationEntry.Kind.COMMAND) {
+            appendEntry(itemId, kind, title, delta);
+            return;
+        }
+        // 命令输出可能高频到达，短暂合并后再刷新页面，避免连续重绘占满界面线程。
+        var buffer = pendingCommandDeltas.computeIfAbsent(itemId, ignored -> new StringBuilder());
+        synchronized (buffer) { buffer.append(delta); }
+        if (scheduledCommandDeltas.add(itemId)) {
+            CompletableFuture.delayedExecutor(40, TimeUnit.MILLISECONDS).execute(() -> flushCommandDelta(itemId, title));
+        }
+    }
+
+    private void flushCommandDelta(String itemId, String title) {
+        scheduledCommandDeltas.remove(itemId);
+        var buffer = pendingCommandDeltas.remove(itemId);
+        if (buffer == null) return;
+        String delta;
+        synchronized (buffer) { delta = buffer.toString(); }
+        if (!delta.isEmpty() && !completedCommandItems.contains(itemId)) ApplicationManager.getApplication().invokeLater(
+            () -> { if (!completedCommandItems.contains(itemId)) appendEntry(itemId, ConversationEntry.Kind.COMMAND, title, delta); });
     }
 
     private String fallbackId(ConversationEntry.Kind kind) {
@@ -1878,7 +1928,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         switch (type) {
             case "agentMessage" -> replaceEntry(id, ConversationEntry.Kind.ASSISTANT, "Codex", "");
             case "plan" -> replaceEntry(id, ConversationEntry.Kind.PLAN, "计划", "");
-            case "commandExecution" -> replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", "$ " + string(item, "command", "") + "\n\n");
+            case "commandExecution" -> {
+                completedCommandItems.remove(id);
+                replaceEntry(id, ConversationEntry.Kind.COMMAND, "命令", "$ " + string(item, "command", "") + "\n\n");
+            }
             case "mcpToolCall" -> replaceEntry(id, ConversationEntry.Kind.MCP, "MCP 工具", string(item, "server", "") + " / " + string(item, "tool", ""));
             case "fileChange" -> updateFileChangeDiffs(item);
             default -> {
@@ -1896,6 +1949,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "agentMessage" -> replaceEntry(id, ConversationEntry.Kind.ASSISTANT, "Codex", string(item, "text", ""));
             case "plan" -> replaceEntry(id, ConversationEntry.Kind.PLAN, "计划", string(item, "text", ""));
             case "commandExecution" -> {
+                completedCommandItems.add(id);
+                scheduledCommandDeltas.remove(id);
+                pendingCommandDeltas.remove(id);
                 var body = new StringBuilder("$ ").append(string(item, "command", ""));
                 var output = string(item, "aggregatedOutput", "");
                 if (!output.isBlank()) body.append("\n\n").append(output);
@@ -1955,8 +2011,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void commandApproval(long requestId, JsonObject params) {
-        var choice = showTimedDialog("Codex 请求执行：\n\n" + string(params, "command", "未知命令"), "命令执行审批", new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"});
-        respondDecision(requestId, choice);
+        // 审批窗口放到后台等待，避免阻塞 IDE 事件线程和聊天界面响应。
+        CompletableFuture.supplyAsync(() -> showTimedDialog(
+            "Codex 请求执行：\n\n" + string(params, "command", "未知命令"), "命令执行审批",
+            new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"}), AppExecutorUtil.getAppExecutorService())
+            .thenAccept(choice -> ApplicationManager.getApplication().invokeLater(() -> respondDecision(requestId, choice)));
     }
 
     private void publishTokenUsage(JsonObject params) {
@@ -1982,8 +2041,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void fileApproval(long requestId, JsonObject params) {
-        var choice = showTimedDialog(string(params, "reason", "Codex 请求修改工作区文件"), "文件修改审批", new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"});
-        respondDecision(requestId, choice);
+        // 文件审批与命令审批使用同一异步等待方式，保持主线程可交互。
+        CompletableFuture.supplyAsync(() -> showTimedDialog(
+            string(params, "reason", "Codex 请求修改工作区文件"), "文件修改审批",
+            new String[]{"允许一次", "本会话允许", "拒绝", "拒绝并停止"}), AppExecutorUtil.getAppExecutorService())
+            .thenAccept(choice -> ApplicationManager.getApplication().invokeLater(() -> respondDecision(requestId, choice)));
     }
 
     private int showTimedDialog(String message, String title, String[] options) {
@@ -2038,11 +2100,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void permissionsApproval(long requestId, JsonObject params) {
-        var approved = showTimedDialog(string(params, "reason", "Codex 请求临时提升权限"), "权限审批", new String[]{"允许", "拒绝"}) == Messages.YES;
-        var result = new JsonObject();
-        result.add("permissions", approved && params.has("permissions") ? params.getAsJsonObject("permissions") : new JsonObject());
-        result.addProperty("scope", "turn");
-        codex.respondToServerRequest(requestId, result);
+        // 权限审批同样异步等待，完成后再回到应用线程发送结果。
+        CompletableFuture.supplyAsync(() -> showTimedDialog(
+            string(params, "reason", "Codex 请求临时提升权限"), "权限审批", new String[]{"允许", "拒绝"}), AppExecutorUtil.getAppExecutorService())
+            .thenAccept(choice -> ApplicationManager.getApplication().invokeLater(() -> {
+                var result = new JsonObject();
+                result.add("permissions", choice == Messages.YES && params.has("permissions") ? params.getAsJsonObject("permissions") : new JsonObject());
+                result.addProperty("scope", "turn");
+                codex.respondToServerRequest(requestId, result);
+            }));
     }
 
     @Override

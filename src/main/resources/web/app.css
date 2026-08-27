@@ -157,6 +157,7 @@ button { color: inherit; }
 .message.user { align-items: flex-end; }
 .message.user .message-body { max-width: 85%; padding: 10px 14px; color: white; background: var(--user); border: 1px solid rgba(255,255,255,.06); border-radius: 12px 12px 2px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .message.assistant .message-body { min-width: 0; width: 100%; color: var(--text); }
+.assistant-duration { align-self: flex-start; color: var(--muted); font-size: 11px; }
 .message-meta { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; }
 .message.assistant .message-meta { display: none; }
 .message.tool { padding-top: 9px; padding-bottom: 9px; }
@@ -165,9 +166,11 @@ button { color: inherit; }
 .tool-head .tool-kind { color: #64b5f6; font-weight: 600; }
 .tool-body { padding: 8px 10px; color: #aaa; font: 12px/1.55 var(--code-font); white-space: pre-wrap; overflow-wrap: anywhere; }
 .message.command { padding-top: 5px; padding-bottom: 5px; }
-.command-row { min-width: 0; height: 30px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,.12); }
+.command-row { width: 100%; min-width: 0; height: 30px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 0 10px; color: var(--muted); text-align: left; border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,.12); cursor: pointer; }
+.command-row:hover { border-color: var(--border-strong); background: var(--hover); }
 .command-label { color: var(--text); font-size: 11px; white-space: nowrap; }
 .command-row code { min-width: 0; overflow: hidden; color: var(--muted); font: 11px var(--code-font); text-overflow: ellipsis; white-space: nowrap; }
+.command-details { max-height: min(360px,45vh); margin: 4px 0 0; padding: 9px 10px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,.18); color: var(--text); font: 11px/1.5 var(--code-font); white-space: pre-wrap; overflow-wrap: anywhere; }
 .command-status { width: 8px; height: 8px; flex: 0 0 auto; border-radius: 50%; background: var(--muted); }
 .command-status.running { animation: command-pulse 1.2s ease-in-out infinite; }
 .command-status.success { background: var(--green); }
@@ -196,11 +199,14 @@ button { color: inherit; }
 .anchor-dot { position: absolute; left: 50%; width: 10px; height: 10px; padding: 0; transform: translate(-50%,-50%); border: 2px solid var(--border-strong); border-radius: 50%; background: var(--bar); pointer-events: auto; cursor: pointer; }
 .anchor-dot:hover, .anchor-dot.active { border-color: var(--accent); background: var(--accent); }
 
-.status-panel { position: relative; flex: 0 0 auto; margin: 0 20px 8px; background: var(--bg); }
-.status-tab { width: 100%; min-height: 34px; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--muted); background: var(--bar); cursor: pointer; font-size: 11px; }
+.status-panel { position: relative; flex: 0 0 auto; margin: 0 10px 8px; }
+.status-tabs { display: flex; align-items: center; overflow: hidden; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bar); font-size: 13px; }
+.status-tab { min-width: 0; min-height: 30px; flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 4px 8px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
+.status-tab + .status-tab { border-left: 1px solid var(--border); border-radius: 0 4px 4px 0; }
 .status-tab:hover, .status-tab.active { color: var(--text); background: var(--raised); }
-.status-tab svg { width: 13px; height: 13px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.status-tab svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .change-stats { display: flex; gap: 4px; font: 600 10px var(--code-font); }
+.plus { color: var(--green); } .minus { color: var(--red); }
 .status-popover { position: absolute; z-index: 30; left: 0; right: 0; bottom: calc(100% + 4px); max-height: min(300px,50vh); display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--bar); box-shadow: 0 -4px 16px rgba(0,0,0,.25); }
 .status-popover-head { min-height: 38px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); }
 .status-actions { display: flex; gap: 5px; }

@@ -10,12 +10,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.HashMap;
-import java.util.Map;
 import java.util.function.Consumer;
 
 @Service(Service.Level.PROJECT)
@@ -25,6 +26,11 @@ public final class WorkspaceChangeService {
     private final Path root;
     private final CopyOnWriteArrayList<Consumer<ChangeUpdate>> listeners = new CopyOnWriteArrayList<>();
     private final Map<String, List<ChangeEntry>> changesBySession = new HashMap<>();
+    /**
+     * 服务端 diff 可能是线程累计快照。记录用户已接受的快照，避免下一次累计
+     * diff 到达时把同一份修改重新加入列表。
+     */
+    private final Map<String, Map<Path, AcceptedChange>> acceptedChangesBySession = new HashMap<>();
     private final Map<String, Integer> activeCapturesBySession = new HashMap<>();
 
     public WorkspaceChangeService(Project project) {
@@ -72,15 +78,24 @@ public final class WorkspaceChangeService {
 
         var next = new LinkedHashMap<Path, ChangeEntry>();
         for (var change : changesBySession.getOrDefault(key, List.of())) next.put(change.path(), change);
+        var accepted = acceptedChangesBySession.get(key);
         for (var fileDiff : UnifiedDiffParser.parse(unifiedDiff, afterContents)) {
             var target = resolveReportedPath(fileDiff.path());
             if (target == null) continue;
 
-            var previous = next.get(target);
             var afterContent = afterContents.get(fileDiff.path());
+            var acceptedChange = accepted == null ? null : accepted.get(target);
+            if (acceptedChange != null && acceptedChange.matches(fileDiff.kind(), fileDiff.unifiedDiff(), afterContent)) {
+                continue;
+            }
+            if (accepted != null) accepted.remove(target);
+            var previous = next.get(target);
             var beforeContent = fileDiff.beforeContent() != null
                 ? fileDiff.beforeContent()
                 : previous == null ? null : previous.beforeContent();
+            if (acceptedChange != null && acceptedChange.afterContent() != null) {
+                beforeContent = AcceptedChange.copy(acceptedChange.afterContent());
+            }
             var reversible = fileDiff.kind() == ChangeEntry.Kind.ADDED || beforeContent != null;
             next.put(target, new ChangeEntry(
                 target,
@@ -91,6 +106,7 @@ public final class WorkspaceChangeService {
                 fileDiff.unifiedDiff()
             ));
         }
+        if (accepted != null && accepted.isEmpty()) acceptedChangesBySession.remove(key);
         changesBySession.put(key, List.copyOf(next.values()));
         fireChanged(key);
     }
@@ -119,11 +135,14 @@ public final class WorkspaceChangeService {
         var key = sessionKey(sessionId);
         activeCapturesBySession.remove(key);
         changesBySession.remove(key);
+        acceptedChangesBySession.remove(key);
         fireChanged(key);
     }
 
     public synchronized void accept(String sessionId, ChangeEntry entry) {
         var key = sessionKey(sessionId);
+        acceptedChangesBySession.computeIfAbsent(key, ignored -> new HashMap<>())
+            .put(entry.path(), AcceptedChange.from(entry));
         changesBySession.put(key, changesBySession.getOrDefault(key, List.of()).stream()
             .filter(change -> !change.path().equals(entry.path())).toList());
         fireChanged(key);
@@ -131,6 +150,10 @@ public final class WorkspaceChangeService {
 
     public synchronized void acceptAll(String sessionId) {
         var key = sessionKey(sessionId);
+        var accepted = acceptedChangesBySession.computeIfAbsent(key, ignored -> new HashMap<>());
+        for (var change : changesBySession.getOrDefault(key, List.of())) {
+            accepted.put(change.path(), AcceptedChange.from(change));
+        }
         changesBySession.remove(key);
         fireChanged(key);
     }
@@ -211,6 +234,22 @@ public final class WorkspaceChangeService {
 
     private String sessionKey(String sessionId) {
         return sessionId == null || sessionId.isBlank() ? "default" : sessionId;
+    }
+
+    private record AcceptedChange(ChangeEntry.Kind kind, String unifiedDiff, byte[] afterContent) {
+        private static AcceptedChange from(ChangeEntry change) {
+            return new AcceptedChange(change.kind(), change.unifiedDiff(), copy(change.afterContent()));
+        }
+
+        private boolean matches(ChangeEntry.Kind currentKind, String currentDiff, byte[] currentAfterContent) {
+            return kind == currentKind
+                && java.util.Objects.equals(unifiedDiff, currentDiff)
+                && Arrays.equals(afterContent, currentAfterContent);
+        }
+
+        private static byte[] copy(byte[] content) {
+            return content == null ? null : Arrays.copyOf(content, content.length);
+        }
     }
 
     public record ChangeUpdate(String sessionId, List<ChangeEntry> changes) {}

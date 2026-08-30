@@ -96,6 +96,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private String currentTurnId;
     private String currentTitle = "新会话";
     private String pendingUserBody;
+    private int pendingUserMessageCount;
     private boolean busy;
     private boolean pageReady;
     private long usageUsedTokens;
@@ -109,15 +110,19 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         private String turnId;
         private String title = "新会话";
         private String pendingUserBody;
+        private int pendingUserMessageCount;
         private boolean busy;
         private long usageUsedTokens;
         private long usageMaxTokens;
         private List<Attachment> attachments = new ArrayList<>();
         private List<FileReference> fileReferences = new ArrayList<>();
         private List<ConversationEntry> transcript = new ArrayList<>();
+        private List<QueuedInput> queuedInputs = new ArrayList<>();
 
         private SessionState(String ignored) {}
     }
+
+    private record QueuedInput(String inputText, String display, List<Attachment> attachments, List<FileReference> fileReferences) {}
 
     private final Map<String, SessionState> sessions = new LinkedHashMap<>();
     private String activeSessionId = "default";
@@ -126,6 +131,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private volatile boolean nativeDragActive;
     private volatile List<ProjectFileSearch.Candidate> projectFileCatalog = List.of();
     private volatile long projectFileCatalogLoadedAt;
+    private List<QueuedInput> queuedInputs = new ArrayList<>();
 
     CodexToolWindowPanel(Project project) {
         super(new BorderLayout());
@@ -306,6 +312,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("connected", codex.isConnected());
         state.addProperty("sessionId", activeSessionId);
         state.addProperty("busy", busy);
+        state.addProperty("queuedCount", queuedInputs.size());
         state.addProperty("title", currentTitle);
         if (currentThreadId != null) state.addProperty("threadId", currentThreadId);
         state.addProperty("model", settings.model);
@@ -342,12 +349,14 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         session.turnId = currentTurnId;
         session.title = currentTitle;
         session.pendingUserBody = pendingUserBody;
+        session.pendingUserMessageCount = pendingUserMessageCount;
         session.busy = busy;
         session.usageUsedTokens = usageUsedTokens;
         session.usageMaxTokens = usageMaxTokens;
         session.attachments = attachments;
         session.fileReferences = fileReferences;
         session.transcript = transcript;
+        session.queuedInputs = queuedInputs;
     }
 
     private void activateSession(String sessionId) {
@@ -360,12 +369,14 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         currentTurnId = session.turnId;
         currentTitle = session.title;
         pendingUserBody = session.pendingUserBody;
+        pendingUserMessageCount = session.pendingUserMessageCount;
         busy = session.busy;
         usageUsedTokens = session.usageUsedTokens;
         usageMaxTokens = session.usageMaxTokens;
         attachments = session.attachments;
         fileReferences = session.fileReferences;
         transcript = session.transcript;
+        queuedInputs = session.queuedInputs;
     }
 
     private void publishCurrentSession() {
@@ -387,9 +398,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void sendInput(String text) {
-        var sessionId = activeSessionId;
         text = text.trim();
-        if (busy || text.isBlank() && attachments.isEmpty() && fileReferences.isEmpty()) return;
+        if (text.isBlank() && attachments.isEmpty() && fileReferences.isEmpty()) return;
+        if (busy) {
+            enqueueInput(text);
+            return;
+        }
         if (!codex.isConnected()) {
             var reconnectText = text;
             codex.start().thenRun(() -> sendInput(reconnectText)).exceptionally(error -> {
@@ -400,6 +414,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
         if (attachments.isEmpty() && fileReferences.isEmpty() && handleNativeCommand(text)) return;
 
+        var input = prepareInput(text);
+        attachments.clear();
+        fileReferences.clear();
+        publishAttachments();
+        publishFileReferences();
+        dispatchInput(input, true);
+    }
+
+    private QueuedInput prepareInput(String text) {
         var settings = CodexSettingsState.getInstance().getState();
         var editorContext = settings.sendOpenedFilePath ? currentEditorContext() : null;
         var inputText = editorContext == null ? text : editorContext.appendTo(text);
@@ -411,12 +434,44 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case IMAGE -> "[图片] ";
             case FILE -> "@";
         }).append(attachment.kind() == Attachment.Kind.FILE ? absolutePath(attachment.path()) : attachment.name()));
-        pendingUserBody = display.toString().trim();
-        addEntry(new ConversationEntry(ConversationEntry.Kind.USER, "你", pendingUserBody, null));
+        return new QueuedInput(inputText, display.toString().trim(), sentAttachments, sentFileReferences);
+    }
+
+    private void enqueueInput(String text) {
+        if (attachments.isEmpty() && fileReferences.isEmpty() && handleNativeCommand(text)) return;
+        var input = prepareInput(text);
+        queuedInputs.add(input);
+        addEntry(new ConversationEntry(
+            ConversationEntry.Kind.USER,
+            "你",
+            input.display(),
+            null,
+            input.fileReferences().stream().map(reference -> absolutePath(reference.path())).toList()
+        ));
+        pendingUserMessageCount++;
         attachments.clear();
         fileReferences.clear();
         publishAttachments();
         publishFileReferences();
+        saveActiveSession();
+        publishQueueState();
+    }
+
+    private void dispatchInput(QueuedInput input, boolean publishUser) {
+        var sessionId = activeSessionId;
+
+        var settings = CodexSettingsState.getInstance().getState();
+        if (publishUser) {
+            pendingUserBody = input.display();
+            addEntry(new ConversationEntry(
+                ConversationEntry.Kind.USER,
+                "你",
+                input.display(),
+                null,
+                input.fileReferences().stream().map(reference -> absolutePath(reference.path())).toList()
+            ));
+            pendingUserMessageCount++;
+        }
         setBusy(true);
 
         var capture = changeService.beginCaptureAsync(sessionId).thenCompose(ignored -> currentThreadId == null
@@ -437,7 +492,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 })
             : CompletableFuture.completedFuture(currentThreadId));
         capture.thenCompose(threadId -> codex.startTurn(
-            threadId, inputText, sentAttachments, sentFileReferences, settings.model, settings.reasoningEffort,
+            threadId, input.inputText(), input.attachments(), input.fileReferences(), settings.model, settings.reasoningEffort,
             settings.serviceTier,
             settings.approvalPolicy, settings.sandboxMode
         )).thenAccept(result -> {
@@ -448,10 +503,21 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }).exceptionally(error -> {
             changeService.finishCaptureAsync(sessionId);
             activateSession(sessionId);
+            if (pendingUserMessageCount > 0) pendingUserMessageCount--;
+            pendingUserBody = null;
             setBusy(false);
             asyncError("无法发送消息", error);
+            startNextQueuedInput(sessionId);
             return null;
         });
+    }
+
+    private void startNextQueuedInput(String sessionId) {
+        activateSession(sessionId);
+        if (busy || queuedInputs.isEmpty()) return;
+        var next = queuedInputs.remove(0);
+        publishQueueState();
+        dispatchInput(next, false);
     }
 
     private String embedFileReferencePaths(String text, List<FileReference> references) {
@@ -586,6 +652,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         currentTurnId = null;
         currentTitle = requestedTitle == null || requestedTitle.isBlank() ? "新会话" : requestedTitle.trim();
         pendingUserBody = null;
+        pendingUserMessageCount = 0;
+        queuedInputs = new ArrayList<>();
         attachments = new ArrayList<>();
         fileReferences = new ArrayList<>();
         clearConversation();
@@ -603,6 +671,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void clearConversation() {
         transcript.clear();
+        pendingUserBody = null;
+        pendingUserMessageCount = 0;
         usageUsedTokens = 0;
         usageMaxTokens = 0;
         var event = event("clear");
@@ -971,7 +1041,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var column = Math.max(1, integer(request, "column"));
         try {
             // 相对路径以当前项目为基准，绝对路径则直接使用 Codex 返回的位置。
-            var path = Path.of(rawPath);
+            var path = Path.of(normalizeReportedFilePath(rawPath));
             if (!path.isAbsolute() && project.getBasePath() != null) path = Path.of(project.getBasePath()).resolve(path);
             // 先刷新本地文件，再按用户可见的行列位置打开编辑器。
             var file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path.normalize());
@@ -984,6 +1054,26 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             // 路径格式无效时给出提示，避免点击链接导致界面线程异常。
             toast("无法打开文件：" + rawPath);
         }
+    }
+
+    static String normalizeReportedFilePath(String rawPath) {
+        var path = rawPath == null ? "" : rawPath.trim();
+        // 浏览器 URL 形式可能给 Windows 盘符补一个前导斜杠，例如 /E:/src/Main.cpp。
+        if (path.matches("^/[A-Za-z]:[\\\\/].*")) path = path.substring(1);
+        var result = new StringBuilder(path.length());
+        for (int i = 0; i < path.length(); i++) {
+            var current = path.charAt(i);
+            if (current == '\\' && i + 1 < path.length() && isMarkdownEscape(path.charAt(i + 1))) {
+                result.append(path.charAt(++i));
+            } else {
+                result.append(current);
+            }
+        }
+        return result.toString();
+    }
+
+    private static boolean isMarkdownEscape(char value) {
+        return "`*_{}[]()#+.!|>~:-".indexOf(value) >= 0;
     }
 
     private void removeAttachment(int index) {
@@ -1140,7 +1230,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var before = change.beforeContent() == null ? "" : new String(change.beforeContent(), StandardCharsets.UTF_8);
         var after = change.afterContent() == null ? "" : new String(change.afterContent(), StandardCharsets.UTF_8);
         var factory = DiffContentFactory.getInstance();
-        DiffManager.getInstance().showDiff(project, new SimpleDiffRequest("Codex 修改 · " + change.displayName(changeService.getRoot()), factory.create(project, before), factory.create(project, after), "回合开始前", "Codex 修改后"));
+        // 将 Diff 文本绑定到实际文件，IDE 才能从 Diff 编辑器导航回源文件。
+        var sourceFile = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(change.path());
+        var beforeContent = sourceFile == null ? factory.create(project, before) : factory.create(project, before, sourceFile);
+        var afterContent = sourceFile == null ? factory.create(project, after) : factory.create(project, after, sourceFile);
+        DiffManager.getInstance().showDiff(project, new SimpleDiffRequest("Codex 修改 · " + change.displayName(changeService.getRoot()), beforeContent, afterContent, "回合开始前", "Codex 修改后"));
     }
 
     private void searchConversation() {
@@ -1699,6 +1793,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         saveActiveSession();
         var event = event("busy");
         event.addProperty("busy", value);
+        event.addProperty("queuedCount", queuedInputs.size());
+        sendEvent(event);
+    }
+
+    private void publishQueueState() {
+        var event = event("queue");
+        event.addProperty("queuedCount", queuedInputs.size());
         sendEvent(event);
     }
 
@@ -1750,6 +1851,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         json.addProperty("kind", entry.kind().name().toLowerCase());
         json.addProperty("title", entry.title());
         json.addProperty("body", entry.body());
+        if (!entry.fileReferencePaths().isEmpty()) {
+            var references = new JsonArray();
+            entry.fileReferencePaths().forEach(references::add);
+            json.add("fileReferencePaths", references);
+        }
         if (entry.itemId() != null) json.addProperty("itemId", entry.itemId());
         return json;
     }
@@ -1833,6 +1939,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 activateSession(sessionId);
                 currentTurnId = null;
                 setBusy(false);
+                startNextQueuedInput(sessionId);
             }
             activateSession(previousSessionId);
         }
@@ -1891,6 +1998,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                     var settings = CodexSettingsState.getInstance().getState();
                     notifyAttention("Codex 任务已完成", currentTitle, settings.taskCompletionNotificationEnabled, settings.taskCompletionSoundEnabled);
                 }
+                startNextQueuedInput(eventSessionId);
             }
             case "error" -> addEntry(new ConversationEntry(ConversationEntry.Kind.ERROR, "Codex 错误", params.toString(), null));
             case "warning", "configWarning", "deprecationNotice" -> addEntry(new ConversationEntry(ConversationEntry.Kind.NOTICE, "提示", string(params, "message", params.toString()), null));
@@ -1967,7 +2075,19 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var id = string(item, "id", fallbackId(ConversationEntry.Kind.NOTICE));
         switch (string(item, "type", "")) {
             case "userMessage" -> {
-                if (pendingUserBody == null) addEntry(new ConversationEntry(ConversationEntry.Kind.USER, "你", userMessageText(array(item, "content")), id));
+                if (pendingUserMessageCount > 0) {
+                    pendingUserMessageCount--;
+                    pendingUserBody = null;
+                } else {
+                    var content = array(item, "content");
+                    addEntry(new ConversationEntry(
+                        ConversationEntry.Kind.USER,
+                        "你",
+                        userMessageText(content),
+                        id,
+                        userMessageReferencePaths(content)
+                    ));
+                }
             }
             case "agentMessage" -> replaceEntry(id, ConversationEntry.Kind.ASSISTANT, "Codex", string(item, "text", ""));
             case "plan" -> replaceEntry(id, ConversationEntry.Kind.PLAN, "计划", string(item, "text", ""));
@@ -2237,6 +2357,18 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             result.append(part);
         }
         return result.toString();
+    }
+
+    private List<String> userMessageReferencePaths(JsonArray content) {
+        var result = new ArrayList<String>();
+        for (JsonElement element : content) {
+            var input = element.getAsJsonObject();
+            if (!"mention".equals(string(input, "type", ""))) continue;
+            var rawPath = string(input, "path", string(input, "name", ""));
+            var path = droppedPath(rawPath);
+            if (path != null) result.add(absolutePath(path));
+        }
+        return List.copyOf(result);
     }
 
     private String mentionPath(String rawPath) {

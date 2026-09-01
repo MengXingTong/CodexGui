@@ -4,7 +4,7 @@
 
 面向 JetBrains IDE 的 OpenAI Codex CLI 图形界面插件。插件通过 `codex app-server --stdio` 直接使用 Codex 原生 JSON-RPC 协议，不注入第三方提示词，也不提供其它模型供应商切换。
 
-当前开发版本：`0.4.1`。项目尚未发布到 JetBrains Marketplace，目前只能从源码运行或自行构建插件包。
+当前开发版本：`0.4.2`。项目尚未发布到 JetBrains Marketplace，目前只能从源码运行或自行构建插件包。
 
 ## 当前能力
 

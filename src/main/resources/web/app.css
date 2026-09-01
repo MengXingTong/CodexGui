@@ -183,7 +183,7 @@ button { color: inherit; }
 .command-batch-status.success { color: var(--green); }
 .command-batch-status.failed { color: var(--red); }
 .command-batch-status.running { color: var(--muted); }
-.command-batch-list { max-height: min(114px, 18vh); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,.12); }
+.command-batch-list { max-height: min(190px, 30vh); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,.12); }
 .command-batch-list .message.command { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,.04); }
 .command-batch-list .message.command:last-child { border-bottom: 0; }
 @keyframes command-pulse { 50% { opacity: .35; } }
@@ -210,9 +210,9 @@ button { color: inherit; }
 .anchor-dot { position: absolute; left: 50%; width: 10px; height: 10px; padding: 0; transform: translate(-50%,-50%); border: 2px solid var(--border-strong); border-radius: 50%; background: var(--bar); pointer-events: auto; cursor: pointer; }
 .anchor-dot:hover, .anchor-dot.active { border-color: var(--accent); background: var(--accent); }
 
-.status-panel { position: relative; flex: 0 0 auto; margin: 0 10px 5px; }
-.status-tabs { display: flex; align-items: center; overflow: hidden; padding: 3px 6px; border: 1px solid var(--border); border-radius: 7px; background: var(--bar); font-size: 12px; }
-.status-tab { min-width: 0; min-height: 26px; flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 2px 6px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
+.status-panel { position: relative; flex: 0 0 auto; margin: 0 10px 8px; }
+.status-tabs { display: flex; align-items: center; overflow: hidden; padding: 6px 8px; border: 1px solid var(--border); border-radius: 7px; background: var(--bar); font-size: 12px; }
+.status-tab { min-width: 0; min-height: 30px; flex: 1 1 0; display: flex; align-items: center; justify-content: center; gap: 7px; padding: 4px 8px; border: 0; border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; }
 .status-tab + .status-tab { border-left: 1px solid var(--border); border-radius: 0 4px 4px 0; }
 .status-tab:hover, .status-tab.active { color: var(--text); background: var(--raised); }
 .status-tab svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
@@ -251,7 +251,7 @@ button { color: inherit; }
 .composer.drag-active .drop-overlay { display: flex; }
 .composer-grip { position: absolute; z-index: 10; top: -20px; left: 50%; width: 112px; height: 14px; transform: translateX(-50%); cursor: ns-resize; touch-action: none; user-select: none; }
 .composer-grip::before { content: ''; position: absolute; top: 7px; left: 50%; width: 60px; height: 4px; transform: translateX(-50%); border-radius: 999px; background: var(--placeholder); opacity: .55; }
-.context-row { min-width: 0; min-height: 26px; display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; padding: 3px 10px; background: #2f2f2f; border-radius: 8px 8px 0 0; }
+.context-row { min-width: 0; min-height: 32px; display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; padding: 6px 12px; background: #2f2f2f; border-radius: 8px 8px 0 0; }
 .context-tools, .context-tools-right { display: flex; align-items: center; gap: 4px; }
 .context-tools-right { margin-left: auto; }
 .context-tool-btn { width: 20px; height: 20px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; outline: 0; background: transparent; color: #888; cursor: pointer; }
@@ -297,7 +297,7 @@ button { color: inherit; }
 .attachment-name { max-width: 100%; margin-top: 2px; overflow: hidden; color: #666; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-remove { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: rgba(0,0,0,.7); color: white; cursor: pointer; opacity: 0; font-size: 10px; }
 .attachment-item:hover .attachment-remove { opacity: 1; }
-.file-reference-chip { position: relative; max-width: min(260px, calc(100% - 4px)); height: 23px; display: inline-flex; align-items: center; gap: 3px; margin: 0 4px 3px 0; padding: 0 3px 0 5px; vertical-align: middle; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: all; cursor: grab; }
+.file-reference-chip { position: relative; max-width: min(260px, calc(100% - 4px)); height: 26px; display: inline-flex; align-items: center; gap: 4px; margin: 0 4px 4px 0; padding: 1px 4px 1px 6px; vertical-align: middle; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: all; cursor: grab; }
 .file-reference-chip.dragging { opacity: .45; cursor: grabbing; }
 .file-reference-drop-caret { display: inline-block; width: 2px; height: 1.5em; margin: 0 2px; vertical-align: middle; background: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb,var(--accent) 22%,transparent); pointer-events: none; }
 .file-reference-context-menu { position: fixed; z-index: 280; min-width: 142px; padding: 4px; border: 1px solid var(--menu-border); border-radius: 6px; background: var(--menu-bg); box-shadow: 0 8px 24px var(--shadow); }
@@ -305,15 +305,15 @@ button { color: inherit; }
 .file-reference-context-menu button:hover { background: var(--menu-hover); }
 .file-reference-context-menu svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; }
 .file-reference-context-menu kbd { color: var(--menu-muted); font: 11px var(--ui-font); white-space: nowrap; }
-.file-reference-icon { width: 14px; height: 14px; flex: 0 0 auto; display: grid; place-items: center; color: #4fc3f7; }
+.file-reference-icon { width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; color: #4fc3f7; }
 .file-reference-chip.directory .file-reference-icon { color: #d7ba7d; }
-.file-reference-icon svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.file-reference-icon svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .file-reference-name { min-width: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-reference-remove { width: 16px; height: 16px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #888; cursor: pointer; opacity: .65; }
+.file-reference-remove { width: 18px; height: 18px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #888; cursor: pointer; opacity: .65; }
 .file-reference-remove:hover { background: var(--hover); color: var(--text); opacity: 1; }
 .file-reference-remove svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; }
 .input-wrap { position: relative; padding: 6px 8px; overflow: hidden; }
-.input { width: 100%; min-height: 84px; overflow: hidden; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font: 13px/1.5 var(--ui-font); overflow-wrap: anywhere; white-space: pre-wrap; }
+.input { width: 100%; min-height: 84px; overflow: hidden; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font: 12px/1.5 var(--ui-font); overflow-wrap: anywhere; white-space: pre-wrap; }
 .input:empty::before { content: attr(data-placeholder); color: var(--placeholder); pointer-events: none; }
 .file-completion { position: absolute; z-index: 90; left: 8px; right: 8px; bottom: calc(100% + 6px); max-height: min(300px, 42vh); overflow-y: auto; padding: 4px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bar); box-shadow: 0 8px 24px rgba(0,0,0,.34); }
 .file-completion-item { width: 100%; min-height: 42px; display: flex; align-items: center; gap: 9px; padding: 6px 9px; border: 0; border-radius: 4px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
@@ -326,7 +326,7 @@ button { color: inherit; }
 .file-completion-copy b { color: var(--text-strong); font-size: 11px; font-weight: 500; }
 .file-completion-copy small { color: var(--muted); font: 9px/1.4 var(--code-font); }
 .file-completion-empty { min-height: 50px; display: grid; place-items: center; padding: 10px; color: var(--muted); font-size: 11px; }
-.toolbar { min-height: 30px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 2px 4px; background: rgba(0,0,0,.1); border-radius: 0 0 8px 8px; }
+.toolbar { min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 4px; background: rgba(0,0,0,.1); border-radius: 0 0 8px 8px; }
 .toolbar-left, .toolbar-right { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .toolbar-left { flex: 1; overflow: hidden; }
 .toolbar-right { gap: 8px; flex: 0 0 auto; }

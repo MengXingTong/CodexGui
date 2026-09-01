@@ -556,8 +556,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void loadModels() {
-        // CLI 尚未完成 initialize 时不能发送请求，等待连接事件重新加载。
-        if (!codex.isConnected()) return;
         codex.listModels().thenAccept(result -> {
             var models = new JsonArray();
             String defaultModel = null;
@@ -897,8 +895,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void publishSkills(boolean forceReload, boolean notify) {
-        // CLI 尚未完成 initialize 时不能发送请求，等待连接事件重新加载。
-        if (!codex.isConnected()) return;
         // 读取当前工作区的原生 Skills，并同步到设置页供浏览和启停。
         codex.listSkills(forceReload).thenAccept(result -> ApplicationManager.getApplication().invokeLater(() -> {
             var items = new JsonArray();
@@ -1938,10 +1934,6 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         event.addProperty("detail", detail);
         sendEvent(event);
         if (connected) {
-            // 连接建立后补发启动阶段被跳过的基础数据请求。
-            loadModels();
-            publishSkills(false);
-            loadHistory("");
             var previousSessionId = activeSessionId;
             for (var sessionId : List.copyOf(sessions.keySet())) {
                 activateSession(sessionId);

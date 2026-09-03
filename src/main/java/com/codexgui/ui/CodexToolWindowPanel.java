@@ -7,11 +7,13 @@ import com.codexgui.model.EditorFileContext;
 import com.codexgui.model.FileReference;
 import com.codexgui.service.CodexAppServerService;
 import com.codexgui.service.CodexEventListener;
+import com.codexgui.service.ClaudeCodeService;
 import com.codexgui.service.NotificationSoundPlayer;
 import com.codexgui.service.ProjectFileSearch;
 import com.codexgui.service.WorkspaceChangeService;
 import com.codexgui.settings.CodexSettingsState;
 import com.codexgui.settings.CodexProjectSettingsState;
+import com.codexgui.settings.ProviderCredentialStore;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -20,6 +22,7 @@ import com.google.gson.JsonObject;
 import com.intellij.diff.DiffContentFactory;
 import com.intellij.diff.DiffManager;
 import com.intellij.diff.requests.SimpleDiffRequest;
+import com.intellij.diff.util.DiffUserDataKeys;
 import com.intellij.ide.BrowserUtil;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
@@ -71,6 +74,7 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.Vector;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -83,6 +87,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private final Project project;
     private final CodexAppServerService codex;
+    private final ClaudeCodeService claude;
     private final WorkspaceChangeService changeService;
     private final NotificationSoundPlayer notificationSoundPlayer = new NotificationSoundPlayer();
     private List<Attachment> attachments = new ArrayList<>();
@@ -94,6 +99,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private String currentThreadId;
     private String currentTurnId;
+    private String currentProvider = "codex";
+    private String currentProviderProfileId = CodexSettingsState.CODEX_LOCAL_PROVIDER_ID;
+    private int currentProviderRevision = 1;
     private String currentTitle = "新会话";
     private String pendingUserBody;
     private int pendingUserMessageCount;
@@ -101,13 +109,18 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private boolean pageReady;
     private long usageUsedTokens;
     private long usageMaxTokens;
+    private JsonArray codexModels = new JsonArray();
     private final Map<String, StringBuilder> pendingCommandDeltas = new ConcurrentHashMap<>();
     private final java.util.Set<String> scheduledCommandDeltas = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> completedCommandItems = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> confirmedSessionIds = ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> claudeTurnGenerations = new ConcurrentHashMap<>();
     private static final class SessionState {
         private String threadId;
         private String turnId;
+        private String provider = "codex";
+        private String providerProfileId = CodexSettingsState.CODEX_LOCAL_PROVIDER_ID;
+        private int providerRevision = 1;
         private String title = "新会话";
         private String pendingUserBody;
         private int pendingUserMessageCount;
@@ -138,7 +151,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         this.project = project;
         this.codex = CodexAppServerService.getInstance(project);
         this.changeService = WorkspaceChangeService.getInstance(project);
-        sessions.put(activeSessionId, new SessionState(activeSessionId));
+        this.claude = new ClaudeCodeService(project.getBasePath() == null ? null : Path.of(project.getBasePath()));
+        var initialSession = new SessionState(activeSessionId);
+        var settingsService = CodexSettingsState.getInstance();
+        initialSession.provider = provider(settingsService.getState().activeProvider);
+        var initialProvider = settingsService.activeProvider(initialSession.provider);
+        initialSession.providerProfileId = initialProvider.id;
+        initialSession.providerRevision = initialProvider.revision;
+        currentProviderProfileId = initialProvider.id;
+        currentProviderRevision = initialProvider.revision;
+        sessions.put(activeSessionId, initialSession);
         this.changeListener = update -> publishChanges(update.sessionId(), update.changes());
 
         if (!JBCefApp.isSupported()) {
@@ -268,10 +290,16 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 case "mcp" -> showMcpServers();
                 case "usage" -> showUsage();
                 case "setting" -> updateSetting(string(request, "key", ""), string(request, "value", ""));
+                case "selectProvider" -> selectProvider(string(request, "provider", "codex"));
+                case "activateProviderProfile" -> activateProviderProfile(string(request, "id", ""));
+                case "saveProviderProfile" -> saveProviderProfile(request);
+                case "deleteProviderProfile" -> deleteProviderProfile(string(request, "id", ""));
+                case "checkProviders" -> publishProviderStatus();
                 case "behaviorSetting" -> updateBehaviorSetting(request);
                 case "browseNotificationSound" -> browseNotificationSound();
                 case "testNotificationSound" -> playConfiguredSound(true);
                 case "toggleStreaming" -> toggleStreaming();
+                case "toggleThinking" -> toggleThinking();
                 case "saveInstructions" -> saveInstructions(request);
                 case "savePrompt" -> savePrompt(request);
                 case "deletePrompt" -> deletePrompt(string(request, "id", ""));
@@ -315,7 +343,11 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         state.addProperty("queuedCount", queuedInputs.size());
         state.addProperty("title", currentTitle);
         if (currentThreadId != null) state.addProperty("threadId", currentThreadId);
-        state.addProperty("model", settings.model);
+        state.addProperty("model", activeModel(settings));
+        state.add("models", providerModels(settings));
+        state.addProperty("provider", currentProvider);
+        state.addProperty("providerProfileId", currentProviderProfileId);
+        state.addProperty("showThinking", settings.showThinking);
         state.addProperty("effort", settings.reasoningEffort);
         state.addProperty("serviceTier", settings.serviceTier);
         state.addProperty("approval", settings.approvalPolicy);
@@ -336,6 +368,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         transcript.forEach(this::publishEntry);
         publishChanges(activeSessionId, changeService.getChanges(activeSessionId));
         publishSkills(false);
+        publishProviderStatus();
         // 页面可能晚于 CLI 连接完成，准备完成后重新请求模型，避免模型事件丢失。
         loadModels();
     }
@@ -347,6 +380,9 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (session == null) return;
         session.threadId = currentThreadId;
         session.turnId = currentTurnId;
+        session.provider = currentProvider;
+        session.providerProfileId = currentProviderProfileId;
+        session.providerRevision = currentProviderRevision;
         session.title = currentTitle;
         session.pendingUserBody = pendingUserBody;
         session.pendingUserMessageCount = pendingUserMessageCount;
@@ -363,10 +399,21 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var id = sessionId == null || sessionId.isBlank() ? "default" : sessionId;
         if (Objects.equals(activeSessionId, id) && activeSession() != null) return;
         saveActiveSession();
-        var session = sessions.computeIfAbsent(id, SessionState::new);
+        var session = sessions.computeIfAbsent(id, key -> {
+            var created = new SessionState(key);
+            var settingsService = CodexSettingsState.getInstance();
+            created.provider = provider(settingsService.getState().activeProvider);
+            var activeProvider = settingsService.activeProvider(created.provider);
+            created.providerProfileId = activeProvider.id;
+            created.providerRevision = activeProvider.revision;
+            return created;
+        });
         activeSessionId = id;
         currentThreadId = session.threadId;
         currentTurnId = session.turnId;
+        currentProvider = provider(session.provider);
+        currentProviderProfileId = session.providerProfileId;
+        currentProviderRevision = session.providerRevision;
         currentTitle = session.title;
         pendingUserBody = session.pendingUserBody;
         pendingUserMessageCount = session.pendingUserMessageCount;
@@ -382,6 +429,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void publishCurrentSession() {
         var event = event("clear");
         event.addProperty("title", currentTitle);
+        event.addProperty("provider", currentProvider);
         if (currentThreadId != null) event.addProperty("threadId", currentThreadId);
         sendEvent(event);
         transcript.forEach(this::publishEntry);
@@ -404,7 +452,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             enqueueInput(text);
             return;
         }
-        if (!codex.isConnected()) {
+        var settingsService = CodexSettingsState.getInstance();
+        var activeProvider = settingsService.activeProvider(currentProvider);
+        if (!Objects.equals(currentProviderProfileId, activeProvider.id) || currentProviderRevision != activeProvider.revision) {
+            toast("当前会话使用的供应商配置已变化，请开启新对话后继续");
+            return;
+        }
+        if (Objects.equals(currentProvider, "codex") && !codex.isConnected()) {
             var reconnectText = text;
             codex.start().thenRun(() -> sendInput(reconnectText)).exceptionally(error -> {
                 asyncError("Codex CLI 未连接", error);
@@ -460,7 +514,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void dispatchInput(QueuedInput input, boolean publishUser) {
         var sessionId = activeSessionId;
 
-        var settings = CodexSettingsState.getInstance().getState();
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        var providerProfile = settingsService.activeProvider(currentProvider);
+        var model = providerProfile.builtIn
+            ? (Objects.equals(currentProvider, "claude") ? settings.claudeModel : settings.model)
+            : providerProfile.model;
         if (publishUser) {
             pendingUserBody = input.display();
             addEntry(new ConversationEntry(
@@ -474,9 +533,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         }
         setBusy(true);
 
+        // Claude Code 使用独立 CLI 会话，不能把会话 ID 或输入误发给 Codex app-server。
+        if (Objects.equals(currentProvider, "claude")) {
+            dispatchClaudeInput(sessionId, input);
+            return;
+        }
+
         var capture = changeService.beginCaptureAsync(sessionId).thenCompose(ignored -> currentThreadId == null
             ? codex.startThread(
-                settings.model,
+                model,
                 settings.reasoningEffort,
                 settings.serviceTier,
                 settings.approvalPolicy,
@@ -492,7 +557,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
                 })
             : CompletableFuture.completedFuture(currentThreadId));
         capture.thenCompose(threadId -> codex.startTurn(
-            threadId, input.inputText(), input.attachments(), input.fileReferences(), settings.model, settings.reasoningEffort,
+            threadId, input.inputText(), input.attachments(), input.fileReferences(), model, settings.reasoningEffort,
             settings.serviceTier,
             settings.approvalPolicy, settings.sandboxMode
         )).thenAccept(result -> {
@@ -510,6 +575,124 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             startNextQueuedInput(sessionId);
             return null;
         });
+    }
+
+    private void dispatchClaudeInput(String sessionId, QueuedInput input) {
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        var providerProfile = settingsService.activeProvider(CodexSettingsState.CLAUDE_CHANNEL);
+        var conversationId = currentThreadId;
+        var turnGeneration = claudeTurnGenerations.merge(sessionId, 1L, Long::sum);
+        var itemId = "claude:" + UUID.randomUUID();
+        var thinkingId = itemId + ":thinking";
+        var streamedText = new StringBuilder();
+        var toolIds = ConcurrentHashMap.<String>newKeySet();
+        var prompt = claudePrompt(input);
+
+        var turn = changeService.beginWorkspaceCaptureAsync(sessionId).thenCompose(ignored -> {
+            // 用户可能在基线快照期间停止任务，过期回合不能继续启动 CLI。
+            if (!isCurrentClaudeTurn(sessionId, turnGeneration)) {
+                return CompletableFuture.failedFuture(new CancellationException("Claude Code 回合已停止"));
+            }
+            return claude.startTurn(
+                sessionId,
+                settings.claudeExecutable,
+                conversationId,
+                prompt,
+                providerProfile.builtIn ? "" : providerProfile.model,
+                settings.reasoningEffort,
+                settings.approvalPolicy,
+                developerInstructions(),
+                providerProfile,
+                new ClaudeCodeService.Listener() {
+                    @Override
+                    public void onModel(String model) {
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            if (!isCurrentClaudeTurn(sessionId, turnGeneration)) return;
+                            activateSession(sessionId);
+                            settings.claudeModel = model;
+                            publishSettings();
+                        });
+                    }
+
+                    @Override
+                    public void onTextDelta(String delta) {
+                        if (delta.isEmpty()) return;
+                        synchronized (streamedText) { streamedText.append(delta); }
+                        if (settings.streamResponses) ApplicationManager.getApplication().invokeLater(() -> {
+                            if (!isCurrentClaudeTurn(sessionId, turnGeneration)) return;
+                            activateSession(sessionId);
+                            appendEntry(itemId, ConversationEntry.Kind.ASSISTANT, "Claude", delta);
+                        });
+                    }
+
+                    @Override
+                    public void onThinkingDelta(String delta) {
+                        if (delta.isEmpty() || !settings.streamResponses) return;
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            if (!isCurrentClaudeTurn(sessionId, turnGeneration)) return;
+                            activateSession(sessionId);
+                            appendEntry(thinkingId, ConversationEntry.Kind.REASONING, "思考", delta);
+                        });
+                    }
+
+                    @Override
+                    public void onTool(String id, String name, JsonObject toolInput) {
+                        toolIds.add(id);
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            if (!isCurrentClaudeTurn(sessionId, turnGeneration)) return;
+                            activateSession(sessionId);
+                            replaceEntry(id, ConversationEntry.Kind.COMMAND, "Claude 工具", name + "\n\n" + GSON.toJson(toolInput));
+                        });
+                    }
+                }
+            );
+        });
+        turn.whenComplete((result, turnError) -> changeService.finishCaptureAsync(sessionId)
+            .whenComplete((ignored, captureError) -> ApplicationManager.getApplication().invokeLater(() -> {
+                activateSession(sessionId);
+                var cancelled = !isCurrentClaudeTurn(sessionId, turnGeneration);
+                var error = turnError == null ? captureError : turnError;
+                // 正常完成时发布最终回复；停止或失败则只收尾当前回合。
+                if (!cancelled && error == null) {
+                    currentThreadId = result.sessionId();
+                    currentTurnId = null;
+                    String received;
+                    synchronized (streamedText) { received = streamedText.toString(); }
+                    if (!settings.streamResponses || received.isBlank()) {
+                        replaceEntry(itemId, ConversationEntry.Kind.ASSISTANT, "Claude", result.finalText());
+                    }
+                    if (!result.model().isBlank()) settings.claudeModel = result.model();
+                    toolIds.forEach(id -> appendEntry(id, ConversationEntry.Kind.COMMAND, "Claude 工具", "\n\n执行状态：completed"));
+                    publishThread();
+                    notifyAttention("Claude 任务已完成", currentTitle, settings.taskCompletionNotificationEnabled, settings.taskCompletionSoundEnabled);
+                } else if (!cancelled) {
+                    asyncError("无法发送 Claude Code 消息", error);
+                }
+                if (pendingUserMessageCount > 0) pendingUserMessageCount--;
+                pendingUserBody = null;
+                setBusy(false);
+                startNextQueuedInput(sessionId);
+            })));
+    }
+
+    private boolean isCurrentClaudeTurn(String sessionId, long generation) {
+        return Objects.equals(claudeTurnGenerations.get(sessionId), generation);
+    }
+
+    private String claudePrompt(QueuedInput input) {
+        var result = new StringBuilder(input.inputText());
+        // Claude Code 通过工作区工具读取附件，因此显式提供绝对路径并保留原始用户文本。
+        for (var reference : input.fileReferences()) {
+            result.append("\n\n[引用文件] ").append(absolutePath(reference.path()));
+        }
+        for (var attachment : input.attachments()) {
+            result.append("\n\n[")
+                .append(attachment.kind() == Attachment.Kind.IMAGE ? "图片" : "附件")
+                .append("] ")
+                .append(absolutePath(attachment.path()));
+        }
+        return result.toString();
     }
 
     private void startNextQueuedInput(String sessionId) {
@@ -573,16 +756,247 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             }
             var settings = CodexSettingsState.getInstance().getState();
             if (settings.model.isBlank() && defaultModel != null) settings.model = defaultModel;
+            codexModels = models.deepCopy();
+            if (!Objects.equals(currentProvider, "codex")) return;
+            var providerProfile = CodexSettingsState.getInstance().activeProvider(CodexSettingsState.CODEX_CHANNEL);
             var event = event("bootstrap");
             var state = new JsonObject();
-            state.add("models", models);
-            state.addProperty("model", settings.model);
+            if (providerProfile.builtIn) {
+                state.add("models", models);
+                state.addProperty("model", settings.model);
+            } else {
+                var providerModels = new JsonArray();
+                providerModels.add(providerProfile.model);
+                state.add("models", providerModels);
+                state.addProperty("model", providerProfile.model);
+            }
             event.add("state", state);
             sendEvent(event);
         }).exceptionally(error -> {
             asyncError("无法读取 Codex 模型列表", error);
             return null;
         });
+    }
+
+    private void selectProvider(String requestedProvider) {
+        var selected = provider(requestedProvider);
+        if (Objects.equals(selected, currentProvider)) return;
+        if (busy) {
+            toast("任务运行期间不能切换供应商");
+            return;
+        }
+        if (currentThreadId != null || !transcript.isEmpty()) {
+            toast("当前会话已绑定供应商，请在新页签或新会话中切换");
+            return;
+        }
+
+        // 供应商只在空白会话中切换，避免跨协议复用不兼容的会话 ID。
+        currentProvider = selected;
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        settings.activeProvider = selected;
+        var profile = settingsService.activeProvider(selected);
+        currentProviderProfileId = profile.id;
+        currentProviderRevision = profile.revision;
+        saveActiveSession();
+        publishSettings();
+        publishProviderStatus();
+        toast(Objects.equals(selected, "claude") ? "已切换到 Claude 渠道" : "已切换到 GPT 渠道");
+    }
+
+    private void publishProviderStatus() {
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        var profiles = List.copyOf(settings.providers);
+        CompletableFuture.supplyAsync(
+            () -> claude.isAvailable(settings.claudeExecutable),
+            AppExecutorUtil.getAppExecutorService()
+        ).thenAccept(claudeAvailable -> {
+            var providers = new JsonArray();
+            for (var profile : profiles) {
+                var localAvailable = Objects.equals(profile.channel, CodexSettingsState.CLAUDE_CHANNEL)
+                    ? claudeAvailable
+                    : codex.isConnected();
+                providers.add(providerJson(profile, localAvailable, settingsService));
+            }
+            var event = event("providers");
+            event.add("items", providers);
+            sendEvent(event);
+        });
+    }
+
+    private JsonObject providerJson(
+        CodexSettingsState.ProviderProfile profile,
+        boolean localAvailable,
+        CodexSettingsState settingsService
+    ) {
+        var json = new JsonObject();
+        var hasApiKey = profile.builtIn || ProviderCredentialStore.has(profile.id);
+        var configured = profile.builtIn || (!profile.baseUrl.isBlank() && !profile.model.isBlank() && hasApiKey);
+        json.addProperty("id", profile.id);
+        json.addProperty("channel", profile.channel);
+        json.addProperty("name", profile.name);
+        json.addProperty("baseUrl", profile.baseUrl);
+        json.addProperty("model", profile.model);
+        json.addProperty("wireApi", profile.wireApi);
+        json.addProperty("claudeAuthType", profile.claudeAuthType);
+        json.addProperty("builtIn", profile.builtIn);
+        json.addProperty("hasApiKey", hasApiKey);
+        json.addProperty("available", profile.builtIn ? localAvailable : configured);
+        json.addProperty("active", Objects.equals(settingsService.activeProviderId(profile.channel), profile.id));
+        if (profile.builtIn) {
+            var executable = Objects.equals(profile.channel, CodexSettingsState.CLAUDE_CHANNEL)
+                ? claude.resolvedExecutable(settingsService.getState().claudeExecutable)
+                : settingsService.getState().codexExecutable;
+            json.addProperty("executable", executable);
+        }
+        return json;
+    }
+
+    private void activateProviderProfile(String id) {
+        var settingsService = CodexSettingsState.getInstance();
+        var profile = settingsService.provider(id);
+        if (profile == null) return;
+        if (sessions.values().stream().anyMatch(item -> item.busy)) {
+            toast("任务运行期间不能切换供应商配置");
+            return;
+        }
+        if (!profile.builtIn && (profile.baseUrl.isBlank() || profile.model.isBlank() || !ProviderCredentialStore.has(profile.id))) {
+            toast("请先补全接口地址、API 密钥和模型");
+            return;
+        }
+        if (Objects.equals(settingsService.activeProviderId(profile.channel), profile.id)) return;
+
+        // 配置按渠道全局启用；空白会话可直接跟随，已有会话保留旧版本并阻止误发。
+        settingsService.setActiveProvider(profile.channel, profile.id);
+        if (Objects.equals(currentProvider, profile.channel) && currentThreadId == null && transcript.isEmpty()) {
+            currentProviderProfileId = profile.id;
+            currentProviderRevision = profile.revision;
+            saveActiveSession();
+        }
+        applyProviderRuntimeChange(profile.channel);
+        publishSettings();
+        publishProviderStatus();
+        toast("已启用供应商：" + profile.name);
+    }
+
+    private void saveProviderProfile(JsonObject request) {
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        var requestedId = string(request, "id", "");
+        var existing = requestedId.isBlank() ? null : settingsService.provider(requestedId);
+        if (existing != null && existing.builtIn) return;
+        var channel = provider(string(request, "channel", CodexSettingsState.CODEX_CHANNEL));
+        var name = string(request, "name", "").trim();
+        var baseUrl = string(request, "baseUrl", "").trim();
+        var model = string(request, "model", "").trim();
+        var apiKey = string(request, "apiKey", "").trim();
+        if (name.isBlank() || baseUrl.isBlank() || model.isBlank()) {
+            toast("供应商名称、接口地址和模型不能为空");
+            return;
+        }
+        if (!validProviderUrl(baseUrl)) {
+            toast("接口地址必须是有效的 http 或 https 地址");
+            return;
+        }
+        if (existing == null && apiKey.isBlank()) {
+            toast("新增供应商时必须填写 API 密钥");
+            return;
+        }
+        var duplicate = settings.providers.stream().anyMatch(item -> !Objects.equals(item.id, requestedId)
+            && Objects.equals(item.channel, channel) && item.name.equalsIgnoreCase(name));
+        if (duplicate) {
+            toast("同一渠道下不能使用重复的供应商名称");
+            return;
+        }
+        var activeEdit = existing != null && Objects.equals(settingsService.activeProviderId(existing.channel), existing.id);
+        if (activeEdit && sessions.values().stream().anyMatch(item -> item.busy)) {
+            toast("任务运行期间不能修改正在使用的供应商");
+            return;
+        }
+
+        var profile = existing == null ? new CodexSettingsState.ProviderProfile() : existing;
+        if (existing == null) profile.id = "provider-" + UUID.randomUUID();
+        profile.channel = channel;
+        profile.name = name;
+        profile.baseUrl = baseUrl;
+        profile.model = model;
+        profile.wireApi = Objects.equals(string(request, "wireApi", "responses"), "chat") ? "chat" : "responses";
+        profile.claudeAuthType = Objects.equals(string(request, "claudeAuthType", "auth-token"), "api-key") ? "api-key" : "auth-token";
+        if (existing != null) profile.revision++;
+        if (existing == null) settings.providers.add(profile);
+        if (!apiKey.isBlank()) ProviderCredentialStore.set(profile.id, apiKey);
+        if (bool(request, "clearApiKey", false)) ProviderCredentialStore.remove(profile.id);
+
+        if (activeEdit) applyProviderRuntimeChange(profile.channel);
+        publishSettings();
+        publishProviderStatus();
+        toast(existing == null ? "供应商已添加" : "供应商配置已保存");
+    }
+
+    private void deleteProviderProfile(String id) {
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        var profile = settingsService.provider(id);
+        if (profile == null || profile.builtIn) return;
+        var active = Objects.equals(settingsService.activeProviderId(profile.channel), profile.id);
+        if (active && sessions.values().stream().anyMatch(item -> item.busy)) {
+            toast("任务运行期间不能删除正在使用的供应商");
+            return;
+        }
+
+        settings.providers.remove(profile);
+        ProviderCredentialStore.remove(profile.id);
+        if (active) {
+            var fallbackId = Objects.equals(profile.channel, CodexSettingsState.CLAUDE_CHANNEL)
+                ? CodexSettingsState.CLAUDE_LOCAL_PROVIDER_ID
+                : CodexSettingsState.CODEX_LOCAL_PROVIDER_ID;
+            settingsService.setActiveProvider(profile.channel, fallbackId);
+            applyProviderRuntimeChange(profile.channel);
+        }
+        publishSettings();
+        publishProviderStatus();
+        toast("供应商已删除");
+    }
+
+    private boolean validProviderUrl(String value) {
+        try {
+            var uri = URI.create(value);
+            return uri.getHost() != null && (Objects.equals(uri.getScheme(), "http") || Objects.equals(uri.getScheme(), "https"));
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private void applyProviderRuntimeChange(String channel) {
+        if (!Objects.equals(channel, CodexSettingsState.CODEX_CHANNEL)) return;
+        codex.restart().thenRun(this::loadModels).exceptionally(error -> {
+            asyncError("切换 GPT 供应商失败", error);
+            return null;
+        });
+    }
+
+    private String provider(String value) {
+        return Objects.equals(value, "claude") ? "claude" : "codex";
+    }
+
+    private String activeModel(CodexSettingsState.StateData settings) {
+        var profile = CodexSettingsState.getInstance().activeProvider(currentProvider);
+        if (!profile.builtIn) return profile.model;
+        return Objects.equals(currentProvider, "claude") ? settings.claudeModel : settings.model;
+    }
+
+    private JsonArray providerModels(CodexSettingsState.StateData settings) {
+        var profile = CodexSettingsState.getInstance().activeProvider(currentProvider);
+        if (!profile.builtIn) {
+            var models = new JsonArray();
+            if (!profile.model.isBlank()) models.add(profile.model);
+            return models;
+        }
+        if (Objects.equals(currentProvider, "codex")) return codexModels.deepCopy();
+        var models = new JsonArray();
+        if (!settings.claudeModel.isBlank()) models.add(settings.claudeModel);
+        return models;
     }
 
     private void loadHistory(String search) {
@@ -652,6 +1066,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         // 新建会话时重置线程和输入上下文，避免旧附件或草稿带入新对话。
         currentThreadId = null;
         currentTurnId = null;
+        currentProvider = provider(settings.activeProvider);
+        var activeProvider = CodexSettingsState.getInstance().activeProvider(currentProvider);
+        currentProviderProfileId = activeProvider.id;
+        currentProviderRevision = activeProvider.revision;
         currentTitle = requestedTitle == null || requestedTitle.isBlank() ? "新会话" : requestedTitle.trim();
         pendingUserBody = null;
         pendingUserMessageCount = 0;
@@ -688,8 +1106,8 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         if (name == null || name.isBlank()) return;
         var sessionId = activeSessionId;
         currentTitle = name.trim();
-        // 空白页签尚未创建 Codex thread，只更新本地会话标题。
-        if (currentThreadId == null) {
+        // 空白页签和 Claude 会话名称由插件本地维护，Codex 会话再同步到 app-server。
+        if (currentThreadId == null || Objects.equals(currentProvider, "claude")) {
             publishThread();
             return;
         }
@@ -1232,13 +1650,26 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var change = changeAt(index);
         if (change == null) return;
         var before = change.beforeContent() == null ? "" : new String(change.beforeContent(), StandardCharsets.UTF_8);
-        var after = change.afterContent() == null ? "" : new String(change.afterContent(), StandardCharsets.UTF_8);
         var factory = DiffContentFactory.getInstance();
-        // 将 Diff 文本绑定到实际文件，IDE 才能从 Diff 编辑器导航回源文件。
+        // 刷新并定位源文件，让 Diff 读取用户当前看到的最新内容。
         var sourceFile = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(change.path());
         var beforeContent = sourceFile == null ? factory.create(project, before) : factory.create(project, before, sourceFile);
-        var afterContent = sourceFile == null ? factory.create(project, after) : factory.create(project, after, sourceFile);
-        DiffManager.getInstance().showDiff(project, new SimpleDiffRequest("Codex 修改 · " + change.displayName(changeService.getRoot()), beforeContent, afterContent, "回合开始前", "Codex 修改后"));
+        var sourceDocument = sourceFile == null ? null : FileDocumentManager.getInstance().getDocument(sourceFile);
+        // 文本源文件绑定真实文档，Diff 中的编辑会直接落到当前文件。
+        var afterContent = sourceDocument == null
+            ? factory.create(project, change.afterContent() == null ? "" : new String(change.afterContent(), StandardCharsets.UTF_8))
+            : factory.create(project, sourceDocument, sourceFile);
+        var request = new SimpleDiffRequest(
+            (Objects.equals(currentProvider, "claude") ? "Claude Code 修改 · " : "Codex 修改 · ")
+                + change.displayName(changeService.getRoot()),
+            beforeContent,
+            afterContent,
+            "AI 修改前（只读）",
+            "当前文件（可编辑）"
+        );
+        // 只读保护 AI 修改前快照，允许右侧真实文件文档接收编辑。
+        request.putUserData(DiffUserDataKeys.FORCE_READ_ONLY_CONTENTS, new boolean[]{true, false});
+        DiffManager.getInstance().showDiff(project, request);
     }
 
     private void searchConversation() {
@@ -1250,9 +1681,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void updateSetting(String key, String value) {
         var settings = CodexSettingsState.getInstance().getState();
-        // 只更新 Codex 原生会话参数，标准档位省略字段以使用服务默认值。
+        // 模型值按供应商分别保存，避免切换后把另一套模型名称带入 CLI。
         switch (key) {
-            case "model" -> settings.model = value;
+            case "model" -> {
+                if (Objects.equals(currentProvider, "claude")) settings.claudeModel = value;
+                else settings.model = value;
+            }
             case "effort" -> settings.reasoningEffort = value;
             case "serviceTier" -> settings.serviceTier = Objects.equals(value, "fast") ? "fast" : "standard";
             case "approval" -> settings.approvalPolicy = value;
@@ -1270,6 +1704,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
             case "sendShortcut" -> settings.sendShortcut = Objects.equals(string(request, "value", "enter"), "cmdEnter") ? "cmdEnter" : "enter";
             case "permissionDialogTimeoutSeconds" -> settings.permissionDialogTimeoutSeconds = Math.max(30, Math.min(3600, integer(request, "value")));
             case "streamResponses" -> settings.streamResponses = bool(request, "value", true);
+            case "showThinking" -> settings.showThinking = bool(request, "value", true);
             case "sendOpenedFilePath" -> settings.sendOpenedFilePath = bool(request, "value", false);
             case "diffExpandedByDefault" -> settings.diffExpandedByDefault = bool(request, "value", false);
             case "newSessionConfirmEnabled" -> settings.newSessionConfirmEnabled = bool(request, "value", true);
@@ -1374,6 +1809,12 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void toggleStreaming() {
         var settings = CodexSettingsState.getInstance().getState();
         settings.streamResponses = !settings.streamResponses;
+        publishSettings();
+    }
+
+    private void toggleThinking() {
+        var settings = CodexSettingsState.getInstance().getState();
+        settings.showThinking = !settings.showThinking;
         publishSettings();
     }
 
@@ -1513,12 +1954,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var settings = CodexSettingsState.getInstance().getState();
         var instructions = sharedInstructions(settings);
         var state = new JsonObject();
-        state.addProperty("model", settings.model);
+        state.addProperty("provider", currentProvider);
+        state.addProperty("model", activeModel(settings));
+        state.add("models", providerModels(settings));
         state.addProperty("effort", settings.reasoningEffort);
         state.addProperty("serviceTier", settings.serviceTier);
         state.addProperty("approval", settings.approvalPolicy);
         state.addProperty("sandbox", settings.sandboxMode);
         state.addProperty("streamResponses", settings.streamResponses);
+        state.addProperty("showThinking", settings.showThinking);
         addBehaviorSettings(state, settings);
         state.addProperty("globalInstructions", settings.globalInstructions);
         state.addProperty("projectInstructions", instructions);
@@ -1544,6 +1988,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void compactCurrentThread() {
         if (currentThreadId == null || busy) return;
+        if (Objects.equals(currentProvider, "claude")) {
+            toast("Claude Code 由 CLI 自动管理上下文，无需手动压缩");
+            return;
+        }
         var sessionId = activeSessionId;
         codex.compactThread(currentThreadId).thenRun(() -> {
             activateSession(sessionId);
@@ -1558,6 +2006,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     private void reviewCurrentChanges() {
         if (currentThreadId == null || busy) {
             toast("请先创建或打开一个会话");
+            return;
+        }
+        if (Objects.equals(currentProvider, "claude")) {
+            sendInput("请审查当前工作区中尚未提交的修改，并优先报告具体问题和风险。");
             return;
         }
         var sessionId = activeSessionId;
@@ -1577,6 +2029,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     private void rollbackLastTurn() {
         if (currentThreadId == null || busy) return;
+        if (Objects.equals(currentProvider, "claude")) {
+            toast("Claude Code CLI 暂不支持从此界面回溯上一回合");
+            return;
+        }
         if (Messages.showYesNoDialog(project, "回退上一轮会话？工作区文件仍由修改面板单独管理。", "回退上一轮", "回退", "取消", Messages.getWarningIcon()) != Messages.YES) return;
         var sessionId = activeSessionId;
         codex.rollbackThread(currentThreadId).thenAccept(result -> {
@@ -1590,6 +2046,15 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void interruptCurrentTurn() {
+        if (Objects.equals(currentProvider, "claude")) {
+            if (!busy) return;
+            // 先让待启动和运行中的回合同时失效，完成链会统一比较快照并启动下一条队列消息。
+            claudeTurnGenerations.merge(activeSessionId, 1L, Long::sum);
+            var processStarted = claude.interrupt(activeSessionId);
+            // CLI 尚未启动时不存在 AI 修改，丢弃基线可避免把等待期间的用户编辑误记到修改栏。
+            if (!processStarted) changeService.discardCapture(activeSessionId);
+            return;
+        }
         if (currentThreadId == null || currentTurnId == null) return;
         var sessionId = activeSessionId;
         codex.interruptTurn(currentThreadId, currentTurnId).exceptionally(error -> {
@@ -1600,6 +2065,10 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
     }
 
     private void showMcpServers() {
+        if (Objects.equals(currentProvider, "claude")) {
+            toast("Claude Code 的 MCP 配置由 Claude CLI 管理");
+            return;
+        }
         codex.listMcpServers(currentThreadId).thenAccept(result -> ApplicationManager.getApplication().invokeLater(() -> {
             var text = new StringBuilder();
             for (var element : array(result, "data")) text.append("• ").append(string(element.getAsJsonObject(), "name", "未命名服务器")).append('\n');
@@ -1869,6 +2338,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
         var event = event("thread");
         if (currentThreadId != null) event.addProperty("id", currentThreadId);
         event.addProperty("title", currentTitle);
+        event.addProperty("provider", currentProvider);
         sendEvent(event);
     }
 
@@ -1933,10 +2403,13 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     @Override
     public void onConnectionChanged(boolean connected, String detail) {
-        var event = event("connection");
-        event.addProperty("connected", connected);
-        event.addProperty("detail", detail);
-        sendEvent(event);
+        if (Objects.equals(currentProvider, "codex")) {
+            var event = event("connection");
+            event.addProperty("connected", connected);
+            event.addProperty("detail", detail);
+            sendEvent(event);
+        }
+        publishProviderStatus();
         if (connected) {
             // 连接建立后补发启动阶段被跳过的基础数据请求。
             loadModels();
@@ -2386,6 +2859,7 @@ final class CodexToolWindowPanel extends JPanel implements Disposable, CodexEven
 
     @Override
     public void dispose() {
+        claude.dispose();
         codex.removeListener(this);
         changeService.removeListener(changeListener);
         notificationSoundPlayer.close();

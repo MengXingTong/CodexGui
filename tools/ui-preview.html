@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="../src/main/resources/web/app.css?v=8">
+  <link rel="stylesheet" href="../src/main/resources/web/app.css?v=10">
 </head>
 <body>
   <div id="app"></div>
@@ -11,11 +11,24 @@
     const previewContextEnabled = location.search.includes('context');
     const previewReferencesEnabled = location.search.includes('references');
     const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',serviceTier:'standard',streamResponses:true,showReasoning:true,sendShortcut:'enter',permissionDialogTimeoutSeconds:300,sendOpenedFilePath:previewContextEnabled,activeFile:previewContextEnabled?'src/main/java/com/codexgui/client/BoundaryDreamlandClientConnectionManager.java':'',activeFileStartLine:previewContextEnabled?128:0,activeFileEndLine:previewContextEnabled?146:0,usagePercentage:18.6,usageUsedTokens:48062,usageMaxTokens:258400,diffExpandedByDefault:false,newSessionConfirmEnabled:true,askUserQuestionNotificationEnabled:true,askUserQuestionSoundEnabled:true,taskCompletionNotificationEnabled:true,taskCompletionSoundEnabled:true,systemNotificationOnlyWhenUnfocused:false,soundOnlyWhenUnfocused:false,notificationSound:'chime',customSoundPath:'',globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['gpt-5.6-codex','gpt-5.4'],attachments:[],fileReferences:previewReferencesEnabled?[{id:'ref-1',name:'BoundaryDreamlandEditor.Target.cs',path:'E:\\Projects\\BoundaryDreamland\\Source\\BoundaryDreamlandEditor.Target.cs',directory:false},{id:'ref-2',name:'feature-with-a-very-long-directory-name',path:'E:\\Projects\\BoundaryDreamland\\feature-with-a-very-long-directory-name',directory:true},{id:'ref-3',name:'README.md',path:'E:\\Projects\\BoundaryDreamland\\README.md',directory:false}]:[]};
+    Object.assign(previewState, {
+      provider: 'codex',
+      showThinking: true,
+      providers: [
+        {id:'codex-local',channel:'codex',name:'Codex 本地配置',builtIn:true,active:false,available:true,hasApiKey:true,executable:'C:\\Users\\demo\\.codex\\bin\\codex.exe'},
+        {id:'openrouter',channel:'codex',name:'OpenRouter',builtIn:false,active:true,available:true,hasApiKey:true,baseUrl:'https://openrouter.ai/api/v1',model:'openai/gpt-5.4',wireApi:'responses'},
+        {id:'company-gateway',channel:'codex',name:'团队网关',builtIn:false,active:false,available:false,hasApiKey:false,baseUrl:'https://ai.example.com/v1',model:'gpt-5.4',wireApi:'chat'},
+        {id:'claude-local',channel:'claude',name:'Claude 本地配置',builtIn:true,active:true,available:true,hasApiKey:true,executable:'C:\\Users\\demo\\AppData\\Roaming\\npm\\claude.exe'},
+        {id:'claude-proxy',channel:'claude',name:'Claude 团队代理',builtIn:false,active:false,available:true,hasApiKey:true,baseUrl:'https://claude.example.com',model:'claude-sonnet-4-6',claudeAuthType:'auth-token'}
+      ]
+    });
     let previewReferenceSequence = 3;
     const previewSkills = [
-      {name:'browser',path:'C:\\Users\\demo\\.codex\\skills\\browser\\SKILL.md',description:'控制浏览器并检查本地 Web 界面。',enabled:true,scope:'user',interface:{displayName:'Browser Control',shortDescription:'浏览器导航、截图与交互验证',brandColor:'#4a90e2',defaultPrompt:'检查当前页面的布局、可访问性和交互状态。'},dependencies:{tools:[{type:'mcp',value:'browser',description:'需要浏览器控制服务'}]}},
+      {name:'browser:control-in-app-browser',path:'C:\\Users\\demo\\.codex\\plugins\\cache\\openai-bundled\\browser\\26.825.31414\\skills\\control-in-app-browser\\SKILL.md',description:'控制浏览器并检查本地 Web 界面。',enabled:true,scope:'user',interface:{displayName:'Browser',shortDescription:'浏览器导航、截图与交互验证',brandColor:'#4a90e2',defaultPrompt:'检查当前页面的布局、可访问性和交互状态。'},dependencies:{tools:[{type:'mcp',value:'browser',description:'需要浏览器控制服务'}]}},
+      {name:'pending-changes-diff:pending-changes-diff',path:'C:\\Users\\demo\\.codex\\plugins\\cache\\personal\\pending-changes-diff\\0.1.0\\skills\\pending-changes-diff\\SKILL.md',description:'管理当前工作区的待处理修改。',enabled:true,scope:'user',interface:{displayName:'Pending Changes Diff',shortDescription:'管理待处理修改'},dependencies:{tools:[]}},
+      {name:'somolmcp-fab-standalone-ue58-3.13.7',path:'C:\\Users\\demo\\.codex\\skills\\somolmcp-fab-standalone-ue58-3.13.7\\SKILL.md',description:'操作 Unreal Engine 编辑器与项目内容。',enabled:true,scope:'user',interface:{displayName:'SOMOLMCP Fab',shortDescription:'Unreal Engine 自动化'},dependencies:{tools:[]}},
       {name:'project-review',path:'E:\\Projects\\demo\\.codex\\skills\\project-review\\SKILL.md',description:'按照项目约束执行代码审查。',enabled:true,scope:'repo',interface:{displayName:'项目代码审查',shortDescription:'检查正确性、回归风险与测试覆盖',brandColor:'#89d185'},dependencies:{tools:[]}},
-      {name:'imagegen',path:'C:\\Users\\demo\\.codex\\skills\\imagegen\\SKILL.md',description:'生成或编辑位图素材。',enabled:false,scope:'system',interface:{displayName:'Image Generation',shortDescription:'创建产品图片、插画与纹理',brandColor:'#d7ba7d'},dependencies:{tools:[{type:'command',value:'imagegen',command:'imagegen'}]}}
+      {name:'imagegen',path:'C:\\Users\\demo\\.codex\\skills\\.system\\imagegen\\SKILL.md',description:'生成或编辑位图素材。',enabled:false,scope:'system',interface:{displayName:'Image Generation',shortDescription:'创建产品图片、插画与纹理',brandColor:'#d7ba7d'},dependencies:{tools:[{type:'command',value:'imagegen',command:'imagegen'}]}}
     ];
     const previewMcp = [
       {name:'github',enabled:true,connectionStatus:'connected',config:{command:'npx',args:['-y','@modelcontextprotocol/server-github'],env:{GITHUB_TOKEN:'demo-secret'}},authStatus:'oAuth',pluginId:null,serverInfo:{name:'github',title:'GitHub',version:'2.4.1',description:'访问仓库、Issue 和 Pull Request。',websiteUrl:'https://github.com'},tools:{search_repositories:{name:'search_repositories',description:'搜索 GitHub 仓库'},get_pull_request:{name:'get_pull_request',description:'读取 Pull Request 详情'}},resources:[{name:'current-user',title:'当前用户',description:'已登录的 GitHub 用户资料',uri:'github://user'}],resourceTemplates:[{name:'repository',title:'仓库',description:'按 owner/name 读取仓库信息',uriTemplate:'github://repos/{owner}/{repo}'}]},
@@ -33,11 +46,32 @@
       window.previewLastMessage = message;
       document.body.dataset.previewLastAction = message.action;
       document.body.dataset.previewLastPayload = payload;
-      if (message.action === 'toggleReasoning') previewState.showReasoning = !previewState.showReasoning;
+      if (message.action === 'toggleThinking') previewState.showThinking = !previewState.showThinking;
       if (message.action === 'toggleStreaming') previewState.streamResponses = !previewState.streamResponses;
+      if (message.action === 'selectProvider') {
+        previewState.provider = message.provider;
+        previewState.model = message.provider === 'claude' ? 'claude-sonnet-4-6' : 'gpt-5.6-codex';
+        previewState.models = [previewState.model];
+      }
+      if (message.action === 'activateProviderProfile') {
+        const selected = previewState.providers.find(item => item.id === message.id);
+        if (selected) previewState.providers.forEach(item => { if (item.channel === selected.channel) item.active = item.id === selected.id; });
+        CodexGui.receive({type:'providers',items:previewState.providers});
+      }
+      if (message.action === 'saveProviderProfile') {
+        const existing = previewState.providers.find(item => item.id === message.id);
+        const saved = {...message,id:message.id||`preview-${Date.now()}`,builtIn:false,active:existing?.active||false,available:!!message.apiKey||!!existing?.hasApiKey,hasApiKey:!!message.apiKey||!!existing?.hasApiKey};
+        if (existing) Object.assign(existing,saved); else previewState.providers.push(saved);
+        CodexGui.receive({type:'providers',items:previewState.providers});
+      }
+      if (message.action === 'deleteProviderProfile') {
+        previewState.providers = previewState.providers.filter(item => item.id !== message.id);
+        CodexGui.receive({type:'providers',items:previewState.providers});
+      }
       if (message.action === 'setting') previewState[message.key] = message.value;
       if (message.action === 'behaviorSetting') previewState[message.key] = message.value;
-      if (['toggleReasoning','toggleStreaming','setting','behaviorSetting'].includes(message.action)) CodexGui.receive({type:'bootstrap',state:previewState});
+      if (['toggleThinking','toggleStreaming','selectProvider','setting','behaviorSetting'].includes(message.action)) CodexGui.receive({type:'bootstrap',state:previewState});
+      if (message.action === 'checkProviders') CodexGui.receive({type:'providers',items:previewState.providers});
       if (['loadSkills','reloadSkills'].includes(message.action)) CodexGui.receive({type:'skills',items:previewSkills,errors:[{path:'E:\\Projects\\demo\\.codex\\skills\\broken\\SKILL.md',message:'frontmatter 缺少 name 字段'}]});
       if (['loadMcp','reloadMcp'].includes(message.action)) CodexGui.receive({type:'mcpServers',items:previewMcp});
       if (message.action === 'copyText') document.body.dataset.previewCopiedText = message.text;
@@ -98,6 +132,7 @@
         CodexGui.receive({type:'bootstrap',state:previewState});
         CodexGui.receive({type:'message',entry:{kind:'user',title:'你',body:'先分析项目结构，然后把 Codex CLI 的全部修改捕获到修改列表。'}});
         CodexGui.receive({type:'message',entry:{kind:'reasoning',title:'推理',itemId:'r1',body:'正在检查插件入口、app-server 协议和工作区快照边界。'}});
+        CodexGui.receive({type:'message',entry:{kind:'plan',title:'计划',itemId:'p1',body:'检查供应商协议并验证输入区交互'}});
         CodexGui.receive({type:'message',entry:{kind:'command',title:'命令',itemId:'c1',body:'$ rg --files src/main\n\nsrc/main/java/com/codexgui/ui/CodexToolWindowPanel.java\nsrc/main/resources/web/app.css\n\n退出码：0'}});
         CodexGui.receive({type:'message',entry:{kind:'assistant',title:'Codex',itemId:'a1',body:'已经完成单列工具窗重构。\n\n## 当前结构\n\n- 历史与设置改为页内切换\n- 用户消息右侧气泡，Codex 输出保持平面 Markdown\n- 修改面板固定在输入框上方\n\n```java\nvar capture = changeService.beginCaptureAsync();\n```'}});
         CodexGui.receive({type:'changes',items:[{path:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java',kind:'MODIFIED',reversible:true,diff:'@@ -1 +1 @@\n-old\n+new\n+line'},{path:'src/main/resources/web/app.css',kind:'ADDED',reversible:true,diff:'@@ -0 +1 @@\n+styles'}]});
@@ -105,6 +140,6 @@
       }, 0);
     };
   </script>
-  <script src="../src/main/resources/web/app.js?v=8"></script>
+  <script src="../src/main/resources/web/app.js?v=10"></script>
 </body>
 </html>

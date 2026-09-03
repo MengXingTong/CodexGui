@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.codexgui"
-version = "0.4.2"
+version = "0.4.4"
 
 repositories {
     mavenCentral()
@@ -41,9 +41,9 @@ intellijPlatform {
         name = "Codex GUI"
         version = project.version.toString()
         description = """
-            <p>Codex GUI is a native Codex CLI interface for JetBrains IDEs.</p>
-            <p>面向 JetBrains IDE 的原生 Codex CLI 图形界面。</p>
-            <p>直接连接 Codex app-server，不注入第三方提示词，不包含其它模型供应商。</p>
+            <p>Codex GUI is a native Codex and Claude Code CLI interface for JetBrains IDEs.</p>
+            <p>面向 JetBrains IDE 的 Codex / Claude Code 图形界面。</p>
+            <p>连接 Codex app-server 与 Claude Code CLI，不注入第三方隐藏提示词。</p>
         """.trimIndent()
 
         ideaVersion {

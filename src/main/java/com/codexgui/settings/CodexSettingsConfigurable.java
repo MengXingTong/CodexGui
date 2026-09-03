@@ -14,7 +14,7 @@ import java.util.Objects;
 
 public final class CodexSettingsConfigurable implements Configurable {
     private JBTextField executableField;
-    private JBTextField modelField;
+    private JBTextField claudeExecutableField;
     private ComboBox<Choice> effortCombo;
     private ComboBox<Choice> serviceTierCombo;
     private ComboBox<Choice> approvalCombo;
@@ -31,7 +31,7 @@ public final class CodexSettingsConfigurable implements Configurable {
     public @Nullable JComponent createComponent() {
         var state = CodexSettingsState.getInstance().getState();
         executableField = new JBTextField(state.codexExecutable);
-        modelField = new JBTextField(state.model);
+        claudeExecutableField = new JBTextField(state.claudeExecutable);
         effortCombo = new ComboBox<>(new Choice[]{new Choice("minimal", "最少"), new Choice("low", "低"), new Choice("medium", "中"), new Choice("high", "高"), new Choice("xhigh", "极高"), new Choice("ultra", "最高")});
         select(effortCombo, state.reasoningEffort);
         serviceTierCombo = new ComboBox<>(new Choice[]{new Choice("standard", "标准"), new Choice("fast", "Fast")});
@@ -46,7 +46,8 @@ public final class CodexSettingsConfigurable implements Configurable {
         return FormBuilder.createFormBuilder()
             .addLabeledComponent(new JBLabel("Codex 可执行文件："), executableField)
             .addTooltip("可以填写 codex、codex.cmd 或 Codex CLI 的绝对路径")
-            .addLabeledComponent(new JBLabel("默认模型（留空使用 Codex 配置）："), modelField)
+            .addLabeledComponent(new JBLabel("Claude Code 可执行文件："), claudeExecutableField)
+            .addTooltip("可以填写 claude、claude.cmd 或 Claude Code CLI 的绝对路径")
             .addLabeledComponent(new JBLabel("默认推理强度："), effortCombo)
             .addLabeledComponent(new JBLabel("响应模式："), serviceTierCombo)
             .addLabeledComponent(new JBLabel("默认审批策略："), approvalCombo)
@@ -61,7 +62,7 @@ public final class CodexSettingsConfigurable implements Configurable {
     public boolean isModified() {
         var state = CodexSettingsState.getInstance().getState();
         return !Objects.equals(state.codexExecutable, executableField.getText().trim())
-            || !Objects.equals(state.model, modelField.getText().trim())
+            || !Objects.equals(state.claudeExecutable, claudeExecutableField.getText().trim())
             || !Objects.equals(state.reasoningEffort, value(effortCombo, "high"))
             || !Objects.equals(state.serviceTier, value(serviceTierCombo, "standard"))
             || !Objects.equals(state.approvalPolicy, value(approvalCombo, "on-request"))
@@ -74,7 +75,7 @@ public final class CodexSettingsConfigurable implements Configurable {
     public void apply() {
         var state = CodexSettingsState.getInstance().getState();
         state.codexExecutable = executableField.getText().trim();
-        state.model = modelField.getText().trim();
+        state.claudeExecutable = claudeExecutableField.getText().trim();
         state.reasoningEffort = value(effortCombo, "high");
         state.serviceTier = value(serviceTierCombo, "standard");
         state.approvalPolicy = value(approvalCombo, "on-request");
@@ -87,7 +88,7 @@ public final class CodexSettingsConfigurable implements Configurable {
     public void reset() {
         var state = CodexSettingsState.getInstance().getState();
         executableField.setText(state.codexExecutable);
-        modelField.setText(state.model);
+        claudeExecutableField.setText(state.claudeExecutable);
         select(effortCombo, state.reasoningEffort);
         select(serviceTierCombo, state.serviceTier);
         select(approvalCombo, state.approvalPolicy);

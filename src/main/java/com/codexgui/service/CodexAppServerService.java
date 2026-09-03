@@ -3,6 +3,7 @@ package com.codexgui.service;
 import com.codexgui.model.Attachment;
 import com.codexgui.model.FileReference;
 import com.codexgui.settings.CodexSettingsState;
+import com.codexgui.settings.ProviderCredentialStore;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -84,11 +85,13 @@ public final class CodexAppServerService implements Disposable {
     }
 
     private void startBlocking() {
-        var state = CodexSettingsState.getInstance().getState();
+        var settingsService = CodexSettingsState.getInstance();
+        var state = settingsService.getState();
+        var provider = settingsService.activeProvider(CodexSettingsState.CODEX_CHANNEL);
         var configuredExecutable = state.codexExecutable.isBlank() ? "codex" : state.codexExecutable;
         var executable = CodexExecutableResolver.resolve(configuredExecutable, SystemInfo.isWindows);
         try {
-            var command = createCommand(executable);
+            var command = createCommand(executable, provider);
             var builder = new ProcessBuilder(command);
             // JetBrains 进程的环境变量可能早于 Codex Desktop 启动，显式指定配置目录，确保读取同一份 config.toml/auth.json。
             var codexHome = System.getenv("CODEX_HOME");
@@ -96,6 +99,11 @@ public final class CodexAppServerService implements Disposable {
                 codexHome = Path.of(System.getProperty("user.home", "."), ".codex").toString();
             }
             builder.environment().put("CODEX_HOME", codexHome);
+            if (!provider.builtIn) {
+                var apiKey = ProviderCredentialStore.get(provider.id);
+                if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("当前 GPT 供应商尚未配置 API 密钥");
+                builder.environment().put("CODEX_GUI_PROVIDER_KEY", apiKey);
+            }
             if (project.getBasePath() != null) builder.directory(Path.of(project.getBasePath()).toFile());
             process = builder.start();
             writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
@@ -110,7 +118,7 @@ public final class CodexAppServerService implements Disposable {
             var clientInfo = new JsonObject();
             clientInfo.addProperty("name", "codex-gui-jetbrains");
             clientInfo.addProperty("title", "Codex GUI for JetBrains");
-            clientInfo.addProperty("version", "0.4.2");
+            clientInfo.addProperty("version", "0.4.4");
             var params = new JsonObject();
             params.add("clientInfo", clientInfo);
             params.add("capabilities", capabilities);
@@ -139,12 +147,41 @@ public final class CodexAppServerService implements Disposable {
             + "。请安装 OpenAI Codex CLI，或在“设置 → 工具 → Codex GUI”中指定可执行文件。";
     }
 
-    private List<String> createCommand(String executable) {
+    static List<String> createCommand(String executable, CodexSettingsState.ProviderProfile provider) {
+        var arguments = new java.util.ArrayList<String>();
+        if (!provider.builtIn) {
+            arguments.add("-c");
+            arguments.add("model_provider=\"codex_gui\"");
+            arguments.add("-c");
+            arguments.add("model_providers.codex_gui.name=" + tomlString(provider.name));
+            arguments.add("-c");
+            arguments.add("model_providers.codex_gui.base_url=" + tomlString(provider.baseUrl));
+            arguments.add("-c");
+            arguments.add("model_providers.codex_gui.env_key=\"CODEX_GUI_PROVIDER_KEY\"");
+            arguments.add("-c");
+            arguments.add("model_providers.codex_gui.wire_api=" + tomlString(provider.wireApi));
+        }
+        arguments.add("app-server");
+        arguments.add("--stdio");
+
         var normalized = executable.toLowerCase();
         if (SystemInfo.isWindows && !normalized.endsWith(".exe")) {
-            return List.of("cmd.exe", "/d", "/c", executable, "app-server", "--stdio");
+            var command = new java.util.ArrayList<>(List.of("cmd.exe", "/d", "/c", executable));
+            command.addAll(arguments);
+            return command;
         }
-        return List.of(executable, "app-server", "--stdio");
+        var command = new java.util.ArrayList<>(List.of(executable));
+        command.addAll(arguments);
+        return command;
+    }
+
+    private static String tomlString(String value) {
+        var escaped = Objects.requireNonNullElse(value, "")
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n");
+        return "\"" + escaped + "\"";
     }
 
     public CompletableFuture<JsonObject> listThreads(String searchTerm) {

@@ -4,8 +4,8 @@
     <vendor>Codex GUI</vendor>
 
     <description><![CDATA[
-      面向 JetBrains IDE 的原生 Codex CLI 图形界面。直接连接 Codex app-server，
-      不注入第三方提示词，不包含其它模型供应商。
+      面向 JetBrains IDE 的 Codex / Claude Code 图形界面。连接 Codex app-server 与
+      Claude Code CLI，不注入第三方隐藏提示词。
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>

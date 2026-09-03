@@ -1,9 +1,13 @@
 package com.codexgui.service;
 
 import com.codexgui.model.ChangeEntry;
+import com.codexgui.settings.CodexSettingsState;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.components.Service;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.util.concurrency.AppExecutorUtil;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -15,12 +19,14 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 @Service(Service.Level.PROJECT)
-public final class WorkspaceChangeService {
+public final class WorkspaceChangeService implements Disposable {
+    private static final Logger LOG = Logger.getInstance(WorkspaceChangeService.class);
     private static final long MAX_CAPTURE_BYTES = 5L * 1024L * 1024L;
 
     private final Path root;
@@ -32,10 +38,16 @@ public final class WorkspaceChangeService {
      */
     private final Map<String, Map<Path, AcceptedChange>> acceptedChangesBySession = new HashMap<>();
     private final Map<String, Integer> activeCapturesBySession = new HashMap<>();
+    private final Map<String, SnapshotCapture> workspaceSnapshotsBySession = new HashMap<>();
+    private final Map<String, Long> captureGenerationsBySession = new HashMap<>();
+    private boolean disposed;
 
     public WorkspaceChangeService(Project project) {
-        this.root = project.getBasePath() == null ? Path.of(".").toAbsolutePath().normalize()
-            : Path.of(project.getBasePath()).toAbsolutePath().normalize();
+        this(project.getBasePath() == null ? Path.of(".") : Path.of(project.getBasePath()));
+    }
+
+    WorkspaceChangeService(Path root) {
+        this.root = root.toAbsolutePath().normalize();
     }
 
     public static WorkspaceChangeService getInstance(@NotNull Project project) {
@@ -58,10 +70,54 @@ public final class WorkspaceChangeService {
         listeners.remove(listener);
     }
 
-    public synchronized CompletableFuture<Void> beginCaptureAsync(String sessionId) {
+    public CompletableFuture<Void> beginCaptureAsync(String sessionId) {
+        return beginCaptureAsync(sessionId, false, false);
+    }
+
+    public CompletableFuture<Void> beginWorkspaceCaptureAsync(String sessionId) {
+        return beginWorkspaceCaptureAsync(
+            sessionId,
+            CodexSettingsState.getInstance().getState().captureIgnoredFiles
+        );
+    }
+
+    CompletableFuture<Void> beginWorkspaceCaptureAsync(String sessionId, boolean captureIgnoredFiles) {
+        return beginCaptureAsync(sessionId, true, captureIgnoredFiles);
+    }
+
+    private CompletableFuture<Void> beginCaptureAsync(
+        String sessionId,
+        boolean captureWorkspaceSnapshot,
+        boolean captureIgnoredFiles
+    ) {
         var key = sessionKey(sessionId);
-        activeCapturesBySession.merge(key, 1, Integer::sum);
-        return CompletableFuture.completedFuture(null);
+        long generation;
+        boolean createSnapshot;
+        synchronized (this) {
+            if (disposed) return CompletableFuture.completedFuture(null);
+            var activeCaptures = activeCapturesBySession.getOrDefault(key, 0);
+            activeCapturesBySession.put(key, activeCaptures + 1);
+            createSnapshot = captureWorkspaceSnapshot && activeCaptures == 0;
+            generation = captureGenerationsBySession.getOrDefault(key, 0L);
+        }
+        if (!createSnapshot) return CompletableFuture.completedFuture(null);
+
+        return CompletableFuture.supplyAsync(
+            () -> captureWorkspace(captureIgnoredFiles),
+            AppExecutorUtil.getAppExecutorService()
+        ).thenAccept(snapshot -> {
+            if (snapshot == null) return;
+            synchronized (this) {
+                // 捕获期间会话可能已关闭，过期快照不能重新创建已确认的修改状态。
+                if (!disposed && activeCapturesBySession.getOrDefault(key, 0) > 0
+                    && captureGenerationsBySession.getOrDefault(key, 0L) == generation) {
+                    var previous = workspaceSnapshotsBySession.put(key, new SnapshotCapture(snapshot, captureIgnoredFiles, generation));
+                    if (previous != null) previous.snapshot().close();
+                    return;
+                }
+            }
+            snapshot.close();
+        });
     }
 
     public synchronized void updateServerDiff(String sessionId, String unifiedDiff) {
@@ -76,39 +132,33 @@ public final class WorkspaceChangeService {
             afterContents.put(path, readCaptureContent(target));
         }
 
-        var next = new LinkedHashMap<Path, ChangeEntry>();
-        for (var change : changesBySession.getOrDefault(key, List.of())) next.put(change.path(), change);
-        var accepted = acceptedChangesBySession.get(key);
+        var detectedChanges = new ArrayList<DetectedChange>();
         for (var fileDiff : UnifiedDiffParser.parse(unifiedDiff, afterContents)) {
-            var target = resolveReportedPath(fileDiff.path());
-            if (target == null) continue;
-
-            var afterContent = afterContents.get(fileDiff.path());
-            var acceptedChange = accepted == null ? null : accepted.get(target);
-            if (acceptedChange != null && acceptedChange.matches(fileDiff.kind(), fileDiff.unifiedDiff(), afterContent)) {
-                continue;
-            }
-            if (accepted != null) accepted.remove(target);
-            var previous = next.get(target);
-            var beforeContent = fileDiff.beforeContent() != null
-                ? fileDiff.beforeContent()
-                : previous == null ? null : previous.beforeContent();
-            if (acceptedChange != null && acceptedChange.afterContent() != null) {
-                beforeContent = AcceptedChange.copy(acceptedChange.afterContent());
-            }
-            var reversible = fileDiff.kind() == ChangeEntry.Kind.ADDED || beforeContent != null;
-            next.put(target, new ChangeEntry(
-                target,
+            detectedChanges.add(new DetectedChange(
+                fileDiff.path(),
                 fileDiff.kind(),
-                beforeContent,
-                afterContent,
-                reversible,
+                fileDiff.beforeContent(),
+                afterContents.get(fileDiff.path()),
+                null,
+                null,
                 fileDiff.unifiedDiff()
             ));
         }
-        if (accepted != null && accepted.isEmpty()) acceptedChangesBySession.remove(key);
-        changesBySession.put(key, List.copyOf(next.values()));
-        fireChanged(key);
+        applyChanges(key, detectedChanges);
+    }
+
+    private static ChangeEntry.Kind mergeKind(ChangeEntry.Kind previous, ChangeEntry.Kind current) {
+        if (previous == null || previous == current) return current;
+        // 新文件后续编辑仍需支持撤销时删除文件，因此保留 ADDED 状态。
+        if (previous == ChangeEntry.Kind.ADDED && current == ChangeEntry.Kind.MODIFIED) return ChangeEntry.Kind.ADDED;
+        // 已有文件被删除后重新创建，恢复为 MODIFIED 更符合实际状态。
+        if (current == ChangeEntry.Kind.ADDED) return ChangeEntry.Kind.MODIFIED;
+        // 新增文件随后被删除时回到原始状态，由调用方的净变化判断负责移除条目。
+        return current;
+    }
+
+    private static byte[] copy(byte[] content) {
+        return content == null ? null : Arrays.copyOf(content, content.length);
     }
 
     public synchronized void updateFileDiff(String sessionId, String relativePath, String kind, String diff) {
@@ -123,20 +173,64 @@ public final class WorkspaceChangeService {
         updateServerDiff(key, normalizedDiff);
     }
 
-    public synchronized CompletableFuture<Void> finishCaptureAsync(String sessionId) {
+    public CompletableFuture<Void> finishCaptureAsync(String sessionId) {
         var key = sessionKey(sessionId);
-        var remaining = Math.max(0, activeCapturesBySession.getOrDefault(key, 0) - 1);
-        if (remaining == 0) activeCapturesBySession.remove(key);
-        else activeCapturesBySession.put(key, remaining);
-        return CompletableFuture.completedFuture(null);
+        SnapshotCapture capture;
+        synchronized (this) {
+            var activeCaptures = activeCapturesBySession.getOrDefault(key, 0);
+            if (activeCaptures == 0) return CompletableFuture.completedFuture(null);
+            var remaining = activeCaptures - 1;
+            if (remaining > 0) {
+                activeCapturesBySession.put(key, remaining);
+                return CompletableFuture.completedFuture(null);
+            }
+            activeCapturesBySession.remove(key);
+            capture = workspaceSnapshotsBySession.remove(key);
+        }
+        if (capture == null) return CompletableFuture.completedFuture(null);
+
+        return CompletableFuture.supplyAsync(
+            () -> captureWorkspace(capture.captureIgnoredFiles(), capture.snapshot().paths()),
+            AppExecutorUtil.getAppExecutorService()
+        ).thenAccept(after -> {
+            try {
+                if (after == null) return;
+                var changes = capture.snapshot().compare(after);
+                synchronized (this) {
+                    if (disposed || captureGenerationsBySession.getOrDefault(key, 0L) != capture.generation()) return;
+                    applyChanges(key, changes.stream().map(DetectedChange::fromSnapshot).toList());
+                }
+            } finally {
+                capture.snapshot().close();
+                if (after != null) after.close();
+            }
+        });
+    }
+
+    public synchronized void discardCapture(String sessionId) {
+        var key = sessionKey(sessionId);
+        activeCapturesBySession.remove(key);
+        var capture = workspaceSnapshotsBySession.remove(key);
+        if (capture != null) capture.snapshot().close();
+        // 让仍在后台生成的基线或结束快照失效，但保留该会话之前累计的修改。
+        captureGenerationsBySession.merge(key, 1L, Long::sum);
     }
 
     public synchronized void confirmSession(String sessionId) {
         var key = sessionKey(sessionId);
-        activeCapturesBySession.remove(key);
+        discardCapture(key);
         changesBySession.remove(key);
         acceptedChangesBySession.remove(key);
         fireChanged(key);
+    }
+
+    @Override
+    public synchronized void dispose() {
+        disposed = true;
+        workspaceSnapshotsBySession.values().forEach(capture -> capture.snapshot().close());
+        workspaceSnapshotsBySession.clear();
+        activeCapturesBySession.clear();
+        listeners.clear();
     }
 
     public synchronized void accept(String sessionId, ChangeEntry entry) {
@@ -159,7 +253,7 @@ public final class WorkspaceChangeService {
     }
 
     public synchronized void revert(String sessionId, ChangeEntry entry) throws IOException {
-        if (!entry.reversible()) throw new IOException("该文件缺少 Codex 修改前内容，无法安全撤销");
+        if (!entry.reversible()) throw new IOException("该文件缺少 AI 修改前内容，无法安全撤销");
         restore(entry);
         var key = sessionKey(sessionId);
         changesBySession.put(key, changesBySession.getOrDefault(key, List.of()).stream()
@@ -195,7 +289,7 @@ public final class WorkspaceChangeService {
     }
 
     private void restore(ChangeEntry entry) throws IOException {
-        // 新文件撤销时删除；已有文件则恢复 Codex 修改前的内容。
+        // 新文件撤销时删除；已有文件则恢复 AI 修改前的内容。
         if (entry.kind() == ChangeEntry.Kind.ADDED) {
             Files.deleteIfExists(entry.path());
             return;
@@ -216,6 +310,70 @@ public final class WorkspaceChangeService {
         }
     }
 
+    private WorkspaceSnapshot captureWorkspace(boolean captureIgnoredFiles) {
+        return captureWorkspace(captureIgnoredFiles, Set.of());
+    }
+
+    private WorkspaceSnapshot captureWorkspace(boolean captureIgnoredFiles, Set<String> baselinePaths) {
+        try {
+            return WorkspaceSnapshot.capture(root, captureIgnoredFiles, MAX_CAPTURE_BYTES, baselinePaths);
+        } catch (IOException error) {
+            LOG.warn("无法捕获工作区快照", error);
+            return null;
+        }
+    }
+
+    private void applyChanges(String sessionId, List<DetectedChange> changes) {
+        if (changes.isEmpty()) return;
+        var next = new LinkedHashMap<Path, ChangeEntry>();
+        for (var change : changesBySession.getOrDefault(sessionId, List.of())) next.put(change.path(), change);
+        var accepted = acceptedChangesBySession.get(sessionId);
+        for (var change : changes) {
+            var target = resolveReportedPath(change.relativePath());
+            if (target == null) continue;
+            var acceptedChange = accepted == null ? null : accepted.get(target);
+            if (acceptedChange != null && acceptedChange.matches(
+                change.kind(),
+                change.diffFor(change.kind(), change.beforeContent()),
+                change.afterContent()
+            )) continue;
+            if (accepted != null) accepted.remove(target);
+
+            var previous = next.get(target);
+            // 两种变化来源统一保留首次未确认修改前的内容，确保累计撤销基线一致。
+            var beforeContent = previous != null && previous.beforeContent() != null
+                ? copy(previous.beforeContent()) : copy(change.beforeContent());
+            if (acceptedChange != null && acceptedChange.afterContent() != null) {
+                beforeContent = AcceptedChange.copy(acceptedChange.afterContent());
+            }
+
+            // 新文件被删掉或文件恢复到原始内容时，累计净变化已经归零。
+            if (previous != null && previous.kind() == ChangeEntry.Kind.ADDED && change.kind() == ChangeEntry.Kind.DELETED) {
+                next.remove(target);
+                continue;
+            }
+            if ((previous != null || acceptedChange != null) && beforeContent != null && change.afterContent() != null
+                && Arrays.equals(beforeContent, change.afterContent())) {
+                next.remove(target);
+                continue;
+            }
+
+            var mergedKind = mergeKind(previous == null ? null : previous.kind(), change.kind());
+            var unifiedDiff = change.diffFor(mergedKind, beforeContent);
+            next.put(target, new ChangeEntry(
+                target,
+                mergedKind,
+                beforeContent,
+                copy(change.afterContent()),
+                mergedKind == ChangeEntry.Kind.ADDED || beforeContent != null,
+                unifiedDiff
+            ));
+        }
+        if (accepted != null && accepted.isEmpty()) acceptedChangesBySession.remove(sessionId);
+        changesBySession.put(sessionId, List.copyOf(next.values()));
+        fireChanged(sessionId);
+    }
+
     private Path resolveReportedPath(String relativePath) {
         if (relativePath == null || relativePath.isBlank()) return null;
         var target = root.resolve(relativePath.replace('/', root.getFileSystem().getSeparator().charAt(0))).normalize();
@@ -228,8 +386,13 @@ public final class WorkspaceChangeService {
 
     private void fireChanged(String sessionId) {
         var snapshot = new ChangeUpdate(sessionId, changesBySession.getOrDefault(sessionId, List.of()));
-        com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater(() ->
-            listeners.forEach(listener -> listener.accept(snapshot)));
+        var notification = (Runnable) () -> listeners.forEach(listener -> listener.accept(snapshot));
+        var application = com.intellij.openapi.application.ApplicationManager.getApplication();
+        if (application == null) {
+            notification.run();
+            return;
+        }
+        application.invokeLater(notification);
     }
 
     private String sessionKey(String sessionId) {
@@ -249,6 +412,46 @@ public final class WorkspaceChangeService {
 
         private static byte[] copy(byte[] content) {
             return content == null ? null : Arrays.copyOf(content, content.length);
+        }
+    }
+
+    private record SnapshotCapture(
+        WorkspaceSnapshot snapshot,
+        boolean captureIgnoredFiles,
+        long generation
+    ) {}
+
+    private record DetectedChange(
+        String relativePath,
+        ChangeEntry.Kind kind,
+        byte[] beforeContent,
+        byte[] afterContent,
+        byte[] beforeHash,
+        byte[] afterHash,
+        String providedDiff
+    ) {
+        private static DetectedChange fromSnapshot(WorkspaceSnapshot.SnapshotChange change) {
+            return new DetectedChange(
+                change.relativePath(),
+                change.kind(),
+                change.beforeContent(),
+                change.afterContent(),
+                change.beforeHash(),
+                change.afterHash(),
+                null
+            );
+        }
+
+        private String diffFor(ChangeEntry.Kind mergedKind, byte[] accumulatedBeforeContent) {
+            if (providedDiff != null) return providedDiff;
+            return UnifiedDiffBuilder.create(
+                relativePath,
+                mergedKind,
+                accumulatedBeforeContent,
+                afterContent,
+                beforeHash,
+                afterHash
+            );
         }
     }
 

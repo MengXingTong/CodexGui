@@ -27,9 +27,15 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service(Service.Level.PROJECT)
@@ -37,18 +43,64 @@ public final class CodexAppServerService implements Disposable {
     private static final Logger LOG = Logger.getInstance(CodexAppServerService.class);
     private static final Gson GSON = new Gson();
     private static final String FILE_REFERENCE_MARKER = "\uFFFC";
+    static final long INITIALIZE_TIMEOUT_SECONDS = 20;
+    static final long RPC_TIMEOUT_SECONDS = 60;
+    static final long OAUTH_TIMEOUT_SECONDS = 300;
+    static final long STOP_TIMEOUT_SECONDS = 2;
+
+    public enum LifecycleState { STOPPED, STARTING, READY, STOPPING, FAILED, DISPOSED }
+
+    static final class Lifecycle {
+        private LifecycleState state = LifecycleState.STOPPED;
+        private long generation;
+
+        synchronized long beginStart() {
+            if (state == LifecycleState.DISPOSED) throw new IllegalStateException("Codex 服务已释放");
+            state = LifecycleState.STARTING;
+            return ++generation;
+        }
+
+        synchronized boolean transition(long expectedGeneration, LifecycleState next) {
+            if (generation != expectedGeneration || state == LifecycleState.DISPOSED) return false;
+            state = next;
+            return true;
+        }
+
+        synchronized void beginStop() {
+            if (state != LifecycleState.DISPOSED) state = LifecycleState.STOPPING;
+        }
+
+        synchronized void dispose() { state = LifecycleState.DISPOSED; }
+        synchronized LifecycleState state() { return state; }
+        synchronized long generation() { return generation; }
+        synchronized boolean isCurrent(long expectedGeneration) { return generation == expectedGeneration; }
+    }
+
+    private record ProcessContext(long generation, Process process, BufferedWriter writer) {}
+    private record RequestKey(long generation, long requestId) {}
+    private record PendingRequest(CompletableFuture<JsonObject> future, ScheduledFuture<?> timeout) {}
 
     private final Project project;
     private final AtomicLong requestSequence = new AtomicLong(1);
-    private final ConcurrentHashMap<Long, CompletableFuture<JsonObject>> pendingRequests = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<RequestKey, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final CopyOnWriteArrayList<CodexEventListener> listeners = new CopyOnWriteArrayList<>();
     private final Object writerLock = new Object();
     private final Object lifecycleLock = new Object();
+    private final Lifecycle lifecycle = new Lifecycle();
+    private final ExecutorService lifecycleExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        var thread = new Thread(runnable, "codedeck-lifecycle");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private final ScheduledExecutorService timeoutExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
+        var thread = new Thread(runnable, "codedeck-rpc-timeouts");
+        thread.setDaemon(true);
+        return thread;
+    });
 
-    private volatile Process process;
-    private volatile BufferedWriter writer;
-    private volatile boolean connected;
+    private volatile ProcessContext context;
     private volatile CompletableFuture<Void> startFuture;
+    private volatile CompletableFuture<Void> stopFuture;
 
     public CodexAppServerService(Project project) {
         this.project = project;
@@ -67,28 +119,52 @@ public final class CodexAppServerService implements Disposable {
     }
 
     public boolean isConnected() {
-        return connected;
+        return lifecycle.state() == LifecycleState.READY;
+    }
+
+    public LifecycleState lifecycleState() {
+        return lifecycle.state();
     }
 
     public CompletableFuture<Void> start() {
         synchronized (lifecycleLock) {
-            if (connected) return CompletableFuture.completedFuture(null);
+            if (lifecycle.state() == LifecycleState.READY) return CompletableFuture.completedFuture(null);
+            if (lifecycle.state() == LifecycleState.DISPOSED) {
+                return CompletableFuture.failedFuture(new IllegalStateException("Codex 服务已释放"));
+            }
+            if (lifecycle.state() == LifecycleState.STOPPING && stopFuture != null) {
+                return stopFuture.thenCompose(ignored -> start());
+            }
             if (startFuture != null && !startFuture.isDone()) return startFuture;
-            startFuture = CompletableFuture.runAsync(this::startBlocking, AppExecutorUtil.getAppExecutorService());
+            var generation = lifecycle.beginStart();
+            startFuture = new CompletableFuture<>();
+            lifecycleExecutor.execute(() -> startBlocking(generation, startFuture));
             return startFuture;
         }
     }
 
     public CompletableFuture<Void> restart() {
-        stopProcess("正在重启 Codex CLI");
-        return start();
+        return stop("正在重启 Codex CLI").thenCompose(ignored -> start());
     }
 
-    private void startBlocking() {
+    CompletableFuture<Void> stop(String detail) {
+        synchronized (lifecycleLock) {
+            if (lifecycle.state() == LifecycleState.DISPOSED || lifecycle.state() == LifecycleState.STOPPED) {
+                return CompletableFuture.completedFuture(null);
+            }
+            if (lifecycle.state() == LifecycleState.STOPPING && stopFuture != null) return stopFuture;
+            lifecycle.beginStop();
+            stopFuture = CompletableFuture.runAsync(
+                () -> stopCurrentProcess(detail, LifecycleState.STOPPED), lifecycleExecutor);
+            return stopFuture;
+        }
+    }
+
+    private void startBlocking(long generation, CompletableFuture<Void> result) {
         var settingsService = CodexSettingsState.getInstance();
-        var state = settingsService.getState();
-        var provider = settingsService.activeProvider(CodexSettingsState.CODEX_CHANNEL);
-        var configuredExecutable = state.codexExecutable.isBlank() ? "codex" : state.codexExecutable;
+        var settings = settingsService.snapshot(CodexSettingsState.CODEX_CHANNEL);
+        var provider = settings.provider();
+        var configuredExecutable = settings.codexExecutable().isBlank() ? "codex" : settings.codexExecutable();
         var executable = CodexExecutableResolver.resolve(configuredExecutable, SystemInfo.isWindows);
         try {
             var command = createCommand(executable, provider);
@@ -99,40 +175,83 @@ public final class CodexAppServerService implements Disposable {
                 codexHome = Path.of(System.getProperty("user.home", "."), ".codex").toString();
             }
             builder.environment().put("CODEX_HOME", codexHome);
-            if (!provider.builtIn) {
-                var apiKey = ProviderCredentialStore.get(provider.id);
+            if (!provider.builtIn()) {
+                var apiKey = ProviderCredentialStore.get(provider.id());
                 if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("当前 GPT 供应商尚未配置 API 密钥");
                 builder.environment().put("CODEX_GUI_PROVIDER_KEY", apiKey);
             }
             if (project.getBasePath() != null) builder.directory(Path.of(project.getBasePath()).toFile());
-            process = builder.start();
-            writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8));
+            var process = builder.start();
+            var startedContext = new ProcessContext(
+                generation,
+                process,
+                new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8))
+            );
+            synchronized (lifecycleLock) {
+                if (!lifecycle.isCurrent(generation) || lifecycle.state() != LifecycleState.STARTING) {
+                    terminateProcess(process);
+                    throw new CancellationException("Codex 启动已取消");
+                }
+                context = startedContext;
+            }
 
             // 独立读取标准输出和错误输出，避免 app-server 的任一管道阻塞。
-            AppExecutorUtil.getAppExecutorService().execute(this::readProtocolLoop);
-            AppExecutorUtil.getAppExecutorService().execute(this::readErrorLoop);
+            AppExecutorUtil.getAppExecutorService().execute(() -> readProtocolLoop(startedContext));
+            AppExecutorUtil.getAppExecutorService().execute(() -> readErrorLoop(startedContext));
 
             var capabilities = new JsonObject();
             capabilities.addProperty("experimentalApi", true);
             capabilities.addProperty("requestAttestation", false);
             var clientInfo = new JsonObject();
-            clientInfo.addProperty("name", "codex-gui-jetbrains");
-            clientInfo.addProperty("title", "Codex GUI for JetBrains");
-            clientInfo.addProperty("version", "0.4.4");
+            clientInfo.addProperty("name", "codedeck-jetbrains");
+            clientInfo.addProperty("title", "CodeDeck for JetBrains");
+            clientInfo.addProperty("version", "0.5.0");
             var params = new JsonObject();
             params.add("clientInfo", clientInfo);
             params.add("capabilities", capabilities);
 
-            request("initialize", params).get(20, TimeUnit.SECONDS);
-            notifyServer("initialized", null);
-            connected = true;
+            request(startedContext, "initialize", params, INITIALIZE_TIMEOUT_SECONDS)
+                .whenComplete((ignored, error) -> lifecycleExecutor.execute(
+                    () -> completeStart(generation, executable, startedContext, result, error)));
+        } catch (Exception error) {
+            failStart(generation, executable, result, error);
+        }
+    }
+
+    private void completeStart(
+        long generation,
+        String executable,
+        ProcessContext startedContext,
+        CompletableFuture<Void> result,
+        Throwable initializeError
+    ) {
+        if (!isCurrent(startedContext) || lifecycle.state() != LifecycleState.STARTING) {
+            result.completeExceptionally(new CancellationException("Codex 启动已取消"));
+            return;
+        }
+        if (initializeError != null) {
+            failStart(generation, executable, result, initializeError);
+            return;
+        }
+        try {
+            notifyServer(startedContext, "initialized", null);
+            if (!lifecycle.transition(generation, LifecycleState.READY)) {
+                throw new CancellationException("Codex 启动已取消");
+            }
+            result.complete(null);
             fireConnectionChanged(true, "Codex CLI 已连接");
         } catch (Exception error) {
-            var message = startupFailureMessage(executable, error);
-            LOG.warn(message, error);
-            stopProcess("Codex CLI 启动失败");
-            throw new IllegalStateException(message, error);
+            failStart(generation, executable, result, error);
         }
+    }
+
+    private void failStart(long generation, String executable, CompletableFuture<Void> result, Throwable error) {
+        var cause = unwrap(error);
+        var message = startupFailureMessage(executable, cause instanceof Exception exception ? exception : new Exception(cause));
+        LOG.warn(message, cause);
+        stopGeneration(generation, "Codex CLI 启动失败", LifecycleState.FAILED);
+        lifecycle.transition(generation, LifecycleState.FAILED);
+        result.completeExceptionally(new IllegalStateException(message, cause));
     }
 
     private String startupFailureMessage(String executable, Exception error) {
@@ -144,35 +263,31 @@ public final class CodexAppServerService implements Disposable {
         var detail = cause.getMessage();
         if (detail == null || detail.isBlank()) detail = cause.getClass().getSimpleName();
         return "无法启动 Codex CLI（" + executable + "）：" + detail
-            + "。请安装 OpenAI Codex CLI，或在“设置 → 工具 → Codex GUI”中指定可执行文件。";
+            + "。请安装 OpenAI Codex CLI，或在“设置 → 工具 → CodeDeck”中指定可执行文件。";
     }
 
     static List<String> createCommand(String executable, CodexSettingsState.ProviderProfile provider) {
+        return createCommand(executable, provider.snapshot());
+    }
+
+    static List<String> createCommand(String executable, CodexSettingsState.ProviderProfileSnapshot provider) {
         var arguments = new java.util.ArrayList<String>();
-        if (!provider.builtIn) {
+        if (!provider.builtIn()) {
             arguments.add("-c");
             arguments.add("model_provider=\"codex_gui\"");
             arguments.add("-c");
-            arguments.add("model_providers.codex_gui.name=" + tomlString(provider.name));
+            arguments.add("model_providers.codex_gui.name=" + tomlString(provider.name()));
             arguments.add("-c");
-            arguments.add("model_providers.codex_gui.base_url=" + tomlString(provider.baseUrl));
+            arguments.add("model_providers.codex_gui.base_url=" + tomlString(provider.baseUrl()));
             arguments.add("-c");
             arguments.add("model_providers.codex_gui.env_key=\"CODEX_GUI_PROVIDER_KEY\"");
             arguments.add("-c");
-            arguments.add("model_providers.codex_gui.wire_api=" + tomlString(provider.wireApi));
+            arguments.add("model_providers.codex_gui.wire_api=" + tomlString(provider.wireApi()));
         }
         arguments.add("app-server");
         arguments.add("--stdio");
 
-        var normalized = executable.toLowerCase();
-        if (SystemInfo.isWindows && !normalized.endsWith(".exe")) {
-            var command = new java.util.ArrayList<>(List.of("cmd.exe", "/d", "/c", executable));
-            command.addAll(arguments);
-            return command;
-        }
-        var command = new java.util.ArrayList<>(List.of(executable));
-        command.addAll(arguments);
-        return command;
+        return ExecutableCommand.build(executable, arguments);
     }
 
     private static String tomlString(String value) {
@@ -387,7 +502,7 @@ public final class CodexAppServerService implements Disposable {
         var response = new JsonObject();
         response.addProperty("id", requestId);
         response.add("result", result);
-        writeMessage(response);
+        writeMessage(requireReadyContext(), response);
     }
 
     private JsonObject attachmentInput(Attachment attachment) {
@@ -434,62 +549,92 @@ public final class CodexAppServerService implements Disposable {
     }
 
     public CompletableFuture<JsonObject> request(String method, JsonObject params) {
+        var activeContext = requireReadyContext();
+        var timeoutSeconds = timeoutSeconds(method);
+        return request(activeContext, method, params, timeoutSeconds);
+    }
+
+    static long timeoutSeconds(String method) {
+        return Objects.equals(method, "mcpServer/oauth/login") ? OAUTH_TIMEOUT_SECONDS : RPC_TIMEOUT_SECONDS;
+    }
+
+    private CompletableFuture<JsonObject> request(
+        ProcessContext activeContext,
+        String method,
+        JsonObject params,
+        long timeoutSeconds
+    ) {
         var id = requestSequence.getAndIncrement();
+        var key = new RequestKey(activeContext.generation(), id);
         var request = new JsonObject();
         request.addProperty("id", id);
         request.addProperty("method", method);
         request.add("params", params == null ? new JsonObject() : params);
         var future = new CompletableFuture<JsonObject>();
-        pendingRequests.put(id, future);
+        var timeout = timeoutExecutor.schedule(() -> {
+            var pending = pendingRequests.remove(key);
+            if (pending != null) pending.future().completeExceptionally(
+                new TimeoutException("Codex RPC 超时：" + method));
+        }, timeoutSeconds, TimeUnit.SECONDS);
+        pendingRequests.put(key, new PendingRequest(future, timeout));
         try {
-            writeMessage(request);
+            writeMessage(activeContext, request);
         } catch (RuntimeException error) {
-            pendingRequests.remove(id);
+            var pending = pendingRequests.remove(key);
+            if (pending != null) pending.timeout().cancel(false);
             future.completeExceptionally(error);
         }
         return future;
     }
 
-    private void notifyServer(String method, JsonObject params) {
+    private void notifyServer(ProcessContext activeContext, String method, JsonObject params) {
         var notification = new JsonObject();
         notification.addProperty("method", method);
         if (params != null) notification.add("params", params);
-        writeMessage(notification);
+        writeMessage(activeContext, notification);
     }
 
-    private void writeMessage(JsonObject message) {
+    private ProcessContext requireReadyContext() {
+        var activeContext = context;
+        if (lifecycle.state() != LifecycleState.READY || activeContext == null) {
+            throw new IllegalStateException("Codex app-server 尚未就绪");
+        }
+        return activeContext;
+    }
+
+    private void writeMessage(ProcessContext activeContext, JsonObject message) {
         synchronized (writerLock) {
             try {
-                if (writer == null) throw new IOException("Codex app-server 尚未启动");
-                writer.write(GSON.toJson(message));
-                writer.newLine();
-                writer.flush();
+                if (context != activeContext || !lifecycle.isCurrent(activeContext.generation())) {
+                    throw new IOException("Codex app-server 进程已过期");
+                }
+                activeContext.writer().write(GSON.toJson(message));
+                activeContext.writer().newLine();
+                activeContext.writer().flush();
             } catch (IOException error) {
                 throw new IllegalStateException("无法写入 Codex app-server", error);
             }
         }
     }
 
-    private void readProtocolLoop() {
-        var activeProcess = process;
-        if (activeProcess == null) return;
-        try (var reader = new BufferedReader(new InputStreamReader(activeProcess.getInputStream(), StandardCharsets.UTF_8))) {
+    private void readProtocolLoop(ProcessContext activeContext) {
+        try (var reader = new BufferedReader(new InputStreamReader(activeContext.process().getInputStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (line.isBlank()) continue;
-                handleProtocolMessage(line);
+                if (!isCurrent(activeContext)) return;
+                handleProtocolMessage(activeContext.generation(), line);
             }
         } catch (Exception error) {
-            if (process == activeProcess) fireProtocolError("Codex CLI 连接已断开", error);
+            if (isCurrent(activeContext)) fireProtocolError("Codex CLI 连接已断开", error);
         } finally {
-            if (process == activeProcess) stopProcess("Codex CLI 已停止");
+            if (isCurrent(activeContext)) lifecycleExecutor.execute(
+                () -> stopGeneration(activeContext.generation(), "Codex CLI 已停止", LifecycleState.FAILED));
         }
     }
 
-    private void readErrorLoop() {
-        var activeProcess = process;
-        if (activeProcess == null) return;
-        try (var reader = new BufferedReader(new InputStreamReader(activeProcess.getErrorStream(), StandardCharsets.UTF_8))) {
+    private void readErrorLoop(ProcessContext activeContext) {
+        try (var reader = new BufferedReader(new InputStreamReader(activeContext.process().getErrorStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
                 if (!line.isBlank()) LOG.warn("codex app-server: " + line);
@@ -498,7 +643,8 @@ public final class CodexAppServerService implements Disposable {
         }
     }
 
-    private void handleProtocolMessage(String line) {
+    private void handleProtocolMessage(long generation, String line) {
+        if (!lifecycle.isCurrent(generation)) return;
         try {
             var message = GSON.fromJson(line, JsonObject.class);
             if (message.has("method")) {
@@ -516,8 +662,10 @@ public final class CodexAppServerService implements Disposable {
 
             if (!message.has("id")) return;
             var id = message.get("id").getAsLong();
-            var future = pendingRequests.remove(id);
-            if (future == null) return;
+            var pending = pendingRequests.remove(new RequestKey(generation, id));
+            if (pending == null) return;
+            pending.timeout().cancel(false);
+            var future = pending.future();
             if (message.has("error")) {
                 future.completeExceptionally(new IllegalStateException(message.get("error").toString()));
             } else {
@@ -550,23 +698,71 @@ public final class CodexAppServerService implements Disposable {
             listeners.forEach(listener -> listener.onProtocolError(message, error)));
     }
 
-    private void stopProcess(String detail) {
+    private boolean isCurrent(ProcessContext activeContext) {
+        return context == activeContext && lifecycle.isCurrent(activeContext.generation());
+    }
+
+    private void stopGeneration(long generation, String detail, LifecycleState finalState) {
+        var activeContext = context;
+        if (!lifecycle.isCurrent(generation) || activeContext == null || activeContext.generation() != generation) return;
+        stopCurrentProcess(detail, finalState);
+    }
+
+    private void stopCurrentProcess(String detail, LifecycleState finalState) {
+        ProcessContext activeContext;
+        boolean notifyDisconnected;
+        CompletableFuture<Void> interruptedStart;
         synchronized (lifecycleLock) {
-            connected = false;
-            var active = process;
-            process = null;
-            writer = null;
-            if (active != null && active.isAlive()) active.destroy();
-            var error = new IllegalStateException(detail);
-            pendingRequests.values().forEach(future -> future.completeExceptionally(error));
-            pendingRequests.clear();
-            fireConnectionChanged(false, detail);
+            if (lifecycle.state() == LifecycleState.DISPOSED) finalState = LifecycleState.DISPOSED;
+            activeContext = context;
+            context = null;
+            notifyDisconnected = lifecycle.state() == LifecycleState.READY || activeContext != null;
+            interruptedStart = startFuture != null && !startFuture.isDone() ? startFuture : null;
+            lifecycle.transition(lifecycle.generation(), finalState);
         }
+        if (activeContext != null) terminateProcess(activeContext.process());
+        failPending(activeContext == null ? null : activeContext.generation(), detail);
+        if (interruptedStart != null) interruptedStart.completeExceptionally(new CancellationException(detail));
+        if (notifyDisconnected) fireConnectionChanged(false, detail);
+    }
+
+    private void terminateProcess(Process process) {
+        if (process == null || !process.isAlive()) return;
+        process.destroy();
+        try {
+            if (!process.waitFor(STOP_TIMEOUT_SECONDS, TimeUnit.SECONDS)) process.destroyForcibly();
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+        }
+    }
+
+    private void failPending(Long generation, String detail) {
+        var error = new IllegalStateException(detail);
+        for (var entry : pendingRequests.entrySet()) {
+            if (generation != null && entry.getKey().generation() != generation) continue;
+            if (!pendingRequests.remove(entry.getKey(), entry.getValue())) continue;
+            entry.getValue().timeout().cancel(false);
+            entry.getValue().future().completeExceptionally(error);
+        }
+    }
+
+    private Throwable unwrap(Throwable error) {
+        var current = error;
+        while (current.getCause() != null && (current instanceof java.util.concurrent.ExecutionException
+            || current instanceof java.util.concurrent.CompletionException)) {
+            current = current.getCause();
+        }
+        return current;
     }
 
     @Override
     public void dispose() {
         listeners.clear();
-        stopProcess("项目已关闭");
+        lifecycle.dispose();
+        stopCurrentProcess("项目已关闭", LifecycleState.DISPOSED);
+        failPending(null, "项目已关闭");
+        lifecycleExecutor.shutdownNow();
+        timeoutExecutor.shutdownNow();
     }
 }

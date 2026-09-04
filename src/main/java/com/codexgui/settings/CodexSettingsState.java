@@ -8,15 +8,81 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 
 @State(name = "CodexGuiSettings", storages = @Storage("codex-gui.xml"))
 public final class CodexSettingsState implements PersistentStateComponent<CodexSettingsState.StateData> {
+    public static final int CURRENT_SCHEMA_VERSION = 1;
     public static final String CODEX_CHANNEL = "codex";
     public static final String CLAUDE_CHANNEL = "claude";
     public static final String CODEX_LOCAL_PROVIDER_ID = "codex-local";
     public static final String CLAUDE_LOCAL_PROVIDER_ID = "claude-local";
 
+    public enum ProviderChannel {
+        CODEX(CODEX_CHANNEL), CLAUDE(CLAUDE_CHANNEL);
+
+        private final String value;
+        ProviderChannel(String value) { this.value = value; }
+        public String value() { return value; }
+        public static ProviderChannel from(String value) { return CLAUDE_CHANNEL.equals(value) ? CLAUDE : CODEX; }
+    }
+
+    public enum ReasoningEffort {
+        MINIMAL("minimal"), LOW("low"), MEDIUM("medium"), HIGH("high"), XHIGH("xhigh"), ULTRA("ultra");
+
+        private final String value;
+        ReasoningEffort(String value) { this.value = value; }
+        public String value() { return value; }
+        public static ReasoningEffort from(String value) {
+            for (var item : values()) if (item.value.equals(value)) return item;
+            return HIGH;
+        }
+    }
+
+    public enum ServiceTier {
+        STANDARD("standard"), FAST("fast");
+
+        private final String value;
+        ServiceTier(String value) { this.value = value; }
+        public String value() { return value; }
+        public static ServiceTier from(String value) { return FAST.value.equals(value) ? FAST : STANDARD; }
+    }
+
+    public enum ApprovalPolicy {
+        UNTRUSTED("untrusted"), ON_REQUEST("on-request"), NEVER("never");
+
+        private final String value;
+        ApprovalPolicy(String value) { this.value = value; }
+        public String value() { return value; }
+        public static ApprovalPolicy from(String value) {
+            for (var item : values()) if (item.value.equals(value)) return item;
+            return ON_REQUEST;
+        }
+    }
+
+    public enum SandboxMode {
+        READ_ONLY("read-only"), WORKSPACE_WRITE("workspace-write"), DANGER_FULL_ACCESS("danger-full-access");
+
+        private final String value;
+        SandboxMode(String value) { this.value = value; }
+        public String value() { return value; }
+        public static SandboxMode from(String value) {
+            for (var item : values()) if (item.value.equals(value)) return item;
+            return WORKSPACE_WRITE;
+        }
+    }
+
+    public enum SendShortcut {
+        ENTER("enter"), COMMAND_ENTER("cmdEnter");
+
+        private final String value;
+        SendShortcut(String value) { this.value = value; }
+        public String value() { return value; }
+        public static SendShortcut from(String value) { return COMMAND_ENTER.value.equals(value) ? COMMAND_ENTER : ENTER; }
+    }
+
     public static final class StateData {
+        public int schemaVersion;
         public String activeProvider = "codex";
         public String activeCodexProviderId = CODEX_LOCAL_PROVIDER_ID;
         public String activeClaudeProviderId = CLAUDE_LOCAL_PROVIDER_ID;
@@ -43,7 +109,6 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         public boolean soundOnlyWhenUnfocused = false;
         public String notificationSound = "default";
         public String customSoundPath = "";
-        public boolean captureIgnoredFiles = true;
         public String globalInstructions = "";
         public String projectInstructions = "";
         public String activePromptId = "";
@@ -78,7 +143,55 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
             this.name = name;
             this.builtIn = builtIn;
         }
+
+        public ProviderProfileSnapshot snapshot() {
+            return new ProviderProfileSnapshot(
+                id, ProviderChannel.from(channel), name, baseUrl, model,
+                "chat".equals(wireApi) ? "chat" : "responses",
+                "api-key".equals(claudeAuthType) ? "api-key" : "auth-token",
+                builtIn, Math.max(1, revision)
+            );
+        }
     }
+
+    public record ProviderProfileSnapshot(
+        String id,
+        ProviderChannel channel,
+        String name,
+        String baseUrl,
+        String model,
+        String wireApi,
+        String claudeAuthType,
+        boolean builtIn,
+        int revision
+    ) {
+        public ProviderProfileSnapshot {
+            id = Objects.requireNonNullElse(id, "");
+            channel = Objects.requireNonNullElse(channel, ProviderChannel.CODEX);
+            name = Objects.requireNonNullElse(name, "");
+            baseUrl = Objects.requireNonNullElse(baseUrl, "");
+            model = Objects.requireNonNullElse(model, "");
+            wireApi = Objects.requireNonNullElse(wireApi, "responses");
+            claudeAuthType = Objects.requireNonNullElse(claudeAuthType, "auth-token");
+            revision = Math.max(1, revision);
+        }
+    }
+
+    public record SettingsSnapshot(
+        ProviderChannel activeProvider,
+        String codexExecutable,
+        String claudeExecutable,
+        String model,
+        String claudeModel,
+        ReasoningEffort reasoningEffort,
+        ServiceTier serviceTier,
+        ApprovalPolicy approvalPolicy,
+        SandboxMode sandboxMode,
+        boolean streamResponses,
+        boolean taskCompletionNotificationEnabled,
+        boolean taskCompletionSoundEnabled,
+        ProviderProfileSnapshot provider
+    ) {}
 
     public static final class PromptPreset {
         public String id = "";
@@ -114,6 +227,10 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
 
     private StateData state = new StateData();
 
+    public CodexSettingsState() {
+        migrateState(state);
+    }
+
     public static CodexSettingsState getInstance() {
         return ApplicationManager.getApplication().getService(CodexSettingsState.class);
     }
@@ -126,7 +243,30 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
     @Override
     public void loadState(@NotNull StateData state) {
         this.state = state;
-        normalizeProviders();
+        migrateState(state);
+    }
+
+    public synchronized SettingsSnapshot snapshot(String channel) {
+        var provider = activeProvider(channel).snapshot();
+        return new SettingsSnapshot(
+            ProviderChannel.from(state.activeProvider),
+            Objects.requireNonNullElse(state.codexExecutable, "codex"),
+            Objects.requireNonNullElse(state.claudeExecutable, "claude"),
+            Objects.requireNonNullElse(state.model, ""),
+            Objects.requireNonNullElse(state.claudeModel, ""),
+            ReasoningEffort.from(state.reasoningEffort),
+            ServiceTier.from(state.serviceTier),
+            ApprovalPolicy.from(state.approvalPolicy),
+            SandboxMode.from(state.sandboxMode),
+            state.streamResponses,
+            state.taskCompletionNotificationEnabled,
+            state.taskCompletionSoundEnabled,
+            provider
+        );
+    }
+
+    public synchronized void setClaudeModel(String model) {
+        state.claudeModel = Objects.requireNonNullElse(model, "");
     }
 
     public ProviderProfile activeProvider(String channel) {
@@ -176,6 +316,19 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         // 旧版本没有活动供应商 ID，迁移时回退到对应渠道的本地配置。
         if (providerInChannel(state.activeCodexProviderId, CODEX_CHANNEL) == null) state.activeCodexProviderId = CODEX_LOCAL_PROVIDER_ID;
         if (providerInChannel(state.activeClaudeProviderId, CLAUDE_CHANNEL) == null) state.activeClaudeProviderId = CLAUDE_LOCAL_PROVIDER_ID;
+    }
+
+    private void migrateState(StateData target) {
+        if (target.schemaVersion >= CURRENT_SCHEMA_VERSION) return;
+        // v1 将历史自由字符串归一化，并补齐双渠道内置 Provider；迁移只在加载旧 schema 时执行一次。
+        target.activeProvider = ProviderChannel.from(target.activeProvider).value();
+        target.reasoningEffort = ReasoningEffort.from(target.reasoningEffort).value();
+        target.serviceTier = ServiceTier.from(target.serviceTier).value();
+        target.approvalPolicy = ApprovalPolicy.from(target.approvalPolicy).value();
+        target.sandboxMode = SandboxMode.from(target.sandboxMode).value();
+        target.sendShortcut = SendShortcut.from(target.sendShortcut).value();
+        normalizeProviders();
+        target.schemaVersion = CURRENT_SCHEMA_VERSION;
     }
 
     private ProviderProfile providerInChannel(String id, String channel) {

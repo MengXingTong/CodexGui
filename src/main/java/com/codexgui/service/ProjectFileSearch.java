@@ -1,5 +1,8 @@
 package com.codexgui.service;
 
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.roots.ProjectFileIndex;
+
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
@@ -22,6 +25,25 @@ public final class ProjectFileSearch {
 
     public static List<Candidate> find(Path root, String query, int limit) {
         return filter(list(root), query, limit);
+    }
+
+    public static List<Candidate> list(Project project) {
+        if (project == null || project.isDisposed() || project.getBasePath() == null) return List.of();
+        var root = Path.of(project.getBasePath()).toAbsolutePath().normalize();
+        var candidates = new ArrayList<Candidate>();
+        // ProjectFileIndex 已遵循模块内容根、排除目录和 IDE ignore 规则，避免手动遍历大型生成目录。
+        ProjectFileIndex.getInstance(project).iterateContent(file -> {
+            if (file.isDirectory()) return true;
+            try {
+                var path = file.toNioPath().toAbsolutePath().normalize();
+                if (!path.startsWith(root)) return true;
+                candidates.add(new Candidate(root.relativize(path).toString().replace('\\', '/'), file.getName()));
+            } catch (RuntimeException ignored) {
+                // 单个无法转换的 VFS 节点不影响其它候选。
+            }
+            return true;
+        });
+        return List.copyOf(candidates);
     }
 
     public static List<Candidate> list(Path root) {

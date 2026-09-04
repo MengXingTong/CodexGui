@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.codexgui.jetbrains</id>
-    <name>Codex GUI</name>
-    <vendor>Codex GUI</vendor>
+    <name>CodeDeck</name>
+    <vendor>CodeDeck</vendor>
 
     <description><![CDATA[
       面向 JetBrains IDE 的 Codex / Claude Code 图形界面。连接 Codex app-server 与
@@ -11,20 +11,22 @@
     <depends>com.intellij.modules.platform</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="Codex"
+        <toolWindow id="CodeDeck"
                     anchor="right"
                     icon="/icons/codex.svg"
                     factoryClass="com.codexgui.ui.CodexToolWindowFactory"
                     canCloseContents="false"/>
         <applicationConfigurable id="com.codexgui.settings"
                                  parentId="tools"
-                                 displayName="Codex GUI"
+                                 displayName="CodeDeck"
                                  instance="com.codexgui.settings.CodexSettingsConfigurable"/>
         <applicationService serviceImplementation="com.codexgui.settings.CodexSettingsState"/>
         <projectService serviceImplementation="com.codexgui.service.CodexAppServerService"/>
-        <projectService serviceImplementation="com.codexgui.service.WorkspaceChangeService"/>
+        <projectService serviceImplementation="com.codexgui.service.ClaudeCodeService"/>
+        <projectService serviceImplementation="com.codexgui.service.ClaudeHookRelayService"/>
+        <projectService serviceImplementation="com.codexgui.service.ConversationChangeTracker"/>
         <projectService serviceImplementation="com.codexgui.settings.CodexProjectSettingsState"/>
-        <notificationGroup id="Codex GUI Notifications"
+        <notificationGroup id="CodeDeck Notifications"
                            displayType="BALLOON"
                            isLogByDefault="false"/>
     </extensions>

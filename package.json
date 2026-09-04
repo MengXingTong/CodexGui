@@ -1,0 +1,20 @@
+{
+  "name": "codedeck-frontend",
+  "version": "0.5.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild src/main/ts/app.ts --bundle --format=iife --platform=browser --target=chrome120 --outfile=build/generated-resources/web/app.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "dompurify": "3.4.14",
+    "marked": "15.0.12"
+  },
+  "devDependencies": {
+    "@types/dompurify": "3.0.5",
+    "esbuild": "0.25.5",
+    "typescript": "5.8.3",
+    "vitest": "3.2.7"
+  }
+}

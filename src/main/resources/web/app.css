@@ -34,6 +34,7 @@
   --selected-text: #ffffff;
   --selected-muted: #b7d8ea;
   --separator: rgba(255,255,255,.05);
+  --hairline: rgba(255,255,255,.04);
   --shadow: rgba(0,0,0,.42);
   --scrollbar: #424242;
   --scrollbar-hover: #4f4f4f;
@@ -77,6 +78,7 @@
   --selected-text: #074d78;
   --selected-muted: #315f7c;
   --separator: #d8dee4;
+  --hairline: #e5e7eb;
   --shadow: rgba(31,35,40,.18);
   --scrollbar: #b8c0c8;
   --scrollbar-hover: #8c959f;
@@ -147,12 +149,14 @@ button { color: inherit; }
 .messages-shell { position: relative; flex: 1; min-height: 0; display: flex; background: var(--bg); }
 .messages { min-width: 0; min-height: 0; flex: 1; overflow-x: hidden; overflow-y: auto; overscroll-behavior-y: contain; background: var(--bg); }
 .messages.has-rail { padding-left: 26px; }
-.generation-status { flex: 0 0 auto; min-height: 43px; display: flex; align-items: center; gap: 12px; padding: 0 34px; border-top: 1px solid rgba(255,255,255,.04); color: var(--muted); font-size: 13px; }
+.load-older-messages { display: block; margin: 12px auto 4px; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--surface-control); color: var(--text-secondary); cursor: pointer; }
+.load-older-messages:hover { background: var(--hover); color: var(--text-strong); }
+.generation-status { flex: 0 0 auto; min-height: 43px; display: flex; align-items: center; gap: 12px; padding: 0 34px; border-top: 1px solid var(--hairline); color: var(--muted); font-size: 13px; }
 .generation-spinner { width: 16px; height: 16px; flex: 0 0 auto; border: 2px solid var(--border-strong); border-top-color: var(--muted); border-right-color: transparent; border-radius: 50%; animation: generation-spin .85s linear infinite; }
 .generation-status-label { white-space: nowrap; }
 .generation-status-time { color: var(--muted); white-space: nowrap; }
 @keyframes generation-spin { to { transform: rotate(360deg); } }
-.message { position: relative; max-width: 100%; min-width: 0; padding: 16px 20px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.message { position: relative; max-width: 100%; min-width: 0; padding: 16px 20px; display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--hairline); }
 .message:last-child { border-bottom: 0; }
 .message.user { align-items: flex-end; }
 .message.user .message-body { max-width: 85%; padding: 10px 14px; color: white; background: var(--user); border: 1px solid rgba(255,255,255,.06); border-radius: 12px 12px 2px 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -184,7 +188,7 @@ button { color: inherit; }
 .command-batch-status.failed { color: var(--red); }
 .command-batch-status.running { color: var(--muted); }
 .command-batch-list { max-height: min(190px, 30vh); overflow-y: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: 6px; background: rgba(0,0,0,.12); }
-.command-batch-list .message.command { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.command-batch-list .message.command { padding: 5px 8px; border-bottom: 1px solid var(--hairline); }
 .command-batch-list .message.command:last-child { border-bottom: 0; }
 @keyframes command-pulse { 50% { opacity: .35; } }
 .message.error .tool-card { border-left: 2px solid var(--red); }
@@ -234,7 +238,7 @@ button { color: inherit; }
 .task-row small { color: var(--muted); font-size: 9px; }
 .status-actions { display: flex; gap: 5px; }
 .change-list { overflow: auto; }
-.change-row { min-height: 38px; display: grid; grid-template-columns: 17px minmax(0,1fr) auto auto; align-items: center; gap: 7px; padding: 6px 9px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.change-row { min-height: 38px; display: grid; grid-template-columns: 17px minmax(0,1fr) auto auto; align-items: center; gap: 7px; padding: 6px 9px; border-bottom: 1px solid var(--hairline); }
 .change-row:hover { background: rgba(255,255,255,.035); }
 .change-kind { width: 17px; height: 17px; display: grid; place-items: center; border-radius: 3px; font: 600 10px var(--code-font); }
 .change-kind.added { color: var(--green); background: rgba(137,209,133,.1); }
@@ -364,7 +368,7 @@ button { color: inherit; }
 .search:focus { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(0,127,212,.4); }
 .history-list, .settings { flex: 1; min-height: 0; overflow: auto; }
 .history-item { position: relative; padding: 16px 24px; border-bottom: 1px solid rgba(255,255,255,.05); cursor: pointer; }
-.history-item:hover { background: rgba(255,255,255,.04); }
+.history-item:hover { background: var(--hairline); }
 .history-main { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 6px; }
 .history-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-strong); font-weight: 600; }
 .history-time, .history-meta { color: var(--muted); font-size: 12px; }

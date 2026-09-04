@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"claude-session-1","model":"claude-sonnet"}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"完成"}}}
+{"type":"assistant","message":{"model":"claude-sonnet","content":[{"type":"tool_use","id":"tool-1","name":"Edit","input":{"file_path":"D:\\project\\README.md","old_string":"old","new_string":"new"}}]}}
+{"type":"result","subtype":"success","session_id":"claude-session-1","is_error":false,"result":"完成"}

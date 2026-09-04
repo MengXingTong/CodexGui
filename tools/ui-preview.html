@@ -35,15 +35,19 @@
       {name:'design-system',enabled:true,connectionStatus:'failed',config:{url:'http://127.0.0.1:8088/mcp',http_headers:{Authorization:'Bearer demo-secret'}},authStatus:'notLoggedIn',pluginId:'design-tools',serverInfo:null,tools:{},resources:[],resourceTemplates:[]}
     ];
     const previewFiles = [
-      {name:'app.js',path:'src/main/resources/web/app.js'},
+      {name:'app.js',path:'build/generated-resources/web/app.js'},
       {name:'app.css',path:'src/main/resources/web/app.css'},
       {name:'CodexToolWindowPanel.java',path:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java'},
       {name:'ProjectFileSearch.java',path:'src/main/java/com/codexgui/service/ProjectFileSearch.java'},
       {name:'README.md',path:'README.md'}
     ];
+    let previewEventSequence = 0;
+    const previewEnvelope = (type,payload={},request={}) => ({v:1,type,requestId:String(request.requestId||`preview-${++previewEventSequence}`),sessionId:String(request.sessionId||previewState.sessionId||'default'),turnId:String(request.turnId||''),generation:Math.max(0,Number(request.generation)||0),payload});
+    const previewReceive = (type,payload={},request={}) => CodexGui.receive(previewEnvelope(type,payload,request));
     window.codexHost = payload => {
-      const message = JSON.parse(payload);
-      window.previewLastMessage = message;
+      const envelope = JSON.parse(payload);
+      const message = envelope?.v === 1 ? {action:envelope.type,requestId:envelope.requestId,sessionId:envelope.sessionId,...envelope.payload} : envelope;
+      window.previewLastMessage = envelope;
       document.body.dataset.previewLastAction = message.action;
       document.body.dataset.previewLastPayload = payload;
       if (message.action === 'toggleThinking') previewState.showThinking = !previewState.showThinking;
@@ -56,39 +60,39 @@
       if (message.action === 'activateProviderProfile') {
         const selected = previewState.providers.find(item => item.id === message.id);
         if (selected) previewState.providers.forEach(item => { if (item.channel === selected.channel) item.active = item.id === selected.id; });
-        CodexGui.receive({type:'providers',items:previewState.providers});
+        previewReceive('providers',{items:previewState.providers});
       }
       if (message.action === 'saveProviderProfile') {
         const existing = previewState.providers.find(item => item.id === message.id);
         const saved = {...message,id:message.id||`preview-${Date.now()}`,builtIn:false,active:existing?.active||false,available:!!message.apiKey||!!existing?.hasApiKey,hasApiKey:!!message.apiKey||!!existing?.hasApiKey};
         if (existing) Object.assign(existing,saved); else previewState.providers.push(saved);
-        CodexGui.receive({type:'providers',items:previewState.providers});
+        previewReceive('providers',{items:previewState.providers});
       }
       if (message.action === 'deleteProviderProfile') {
         previewState.providers = previewState.providers.filter(item => item.id !== message.id);
-        CodexGui.receive({type:'providers',items:previewState.providers});
+        previewReceive('providers',{items:previewState.providers});
       }
       if (message.action === 'setting') previewState[message.key] = message.value;
       if (message.action === 'behaviorSetting') previewState[message.key] = message.value;
-      if (['toggleThinking','toggleStreaming','selectProvider','setting','behaviorSetting'].includes(message.action)) CodexGui.receive({type:'bootstrap',state:previewState});
-      if (message.action === 'checkProviders') CodexGui.receive({type:'providers',items:previewState.providers});
-      if (['loadSkills','reloadSkills'].includes(message.action)) CodexGui.receive({type:'skills',items:previewSkills,errors:[{path:'E:\\Projects\\demo\\.codex\\skills\\broken\\SKILL.md',message:'frontmatter 缺少 name 字段'}]});
-      if (['loadMcp','reloadMcp'].includes(message.action)) CodexGui.receive({type:'mcpServers',items:previewMcp});
+      if (['toggleThinking','toggleStreaming','selectProvider','setting','behaviorSetting'].includes(message.action)) previewReceive('bootstrap',{state:previewState});
+      if (message.action === 'checkProviders') previewReceive('providers',{items:previewState.providers});
+      if (['loadSkills','reloadSkills'].includes(message.action)) previewReceive('skills',{items:previewSkills,errors:[{path:'E:\\Projects\\demo\\.codex\\skills\\broken\\SKILL.md',message:'frontmatter 缺少 name 字段'}]});
+      if (['loadMcp','reloadMcp'].includes(message.action)) previewReceive('mcpServers',{items:previewMcp});
       if (message.action === 'copyText') document.body.dataset.previewCopiedText = message.text;
       if (message.action === 'removeFileReference') {
         previewState.fileReferences = previewState.fileReferences.filter(item => item.id !== message.id);
-        CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
+        previewReceive('fileReferences',{items:previewState.fileReferences});
       }
       if (message.action === 'removeFileReferences') {
         previewState.fileReferences = previewState.fileReferences.filter(item => !message.ids.includes(item.id));
-        CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
+        previewReceive('fileReferences',{items:previewState.fileReferences});
       }
       if (message.action === 'addFileReferences') {
         message.paths.forEach(path => {
           const existing = previewState.fileReferences.find(item => item.path === path);
           if (existing) previewState.fileReferences.push({...existing,id:`ref-${++previewReferenceSequence}`});
         });
-        CodexGui.receive({type:'fileReferences',items:previewState.fileReferences});
+        previewReceive('fileReferences',{items:previewState.fileReferences});
       }
       if (message.action === 'reorderFileReferences') {
         const remaining = [...previewState.fileReferences];
@@ -100,46 +104,61 @@
       if (message.action === 'listProjectFiles') {
         const query = String(message.query || '').toLowerCase();
         const items = previewFiles.filter(item => !query || item.path.toLowerCase().includes(query) || item.name.toLowerCase().includes(query));
-        setTimeout(() => CodexGui.receive({type:'projectFiles',requestId:message.requestId,items}), 25);
+        setTimeout(() => previewReceive('projectFiles',{items},{requestId:message.requestId}), 25);
       }
       if (message.action === 'setMcpEnabled') {
         const server = previewMcp.find(item => item.name === message.name);
         if (server) server.enabled = message.enabled;
-        CodexGui.receive({type:'mcpServers',items:previewMcp});
+        previewReceive('mcpServers',{items:previewMcp});
       }
       if (message.action === 'saveMcp') {
         const index = previewMcp.findIndex(item => item.name === (message.originalName || message.name));
         const server = {name:message.name,enabled:message.config.enabled !== false,connectionStatus:'failed',config:message.config,authStatus:'unknown',serverInfo:null,tools:{},resources:[],resourceTemplates:[]};
         if (index >= 0) previewMcp[index] = server; else previewMcp.push(server);
-        CodexGui.receive({type:'mcpServers',items:previewMcp});
+        previewReceive('mcpServers',{items:previewMcp});
       }
       if (message.action === 'deleteMcp') {
         const index = previewMcp.findIndex(item => item.name === message.name);
         if (index >= 0) previewMcp.splice(index, 1);
-        CodexGui.receive({type:'mcpServers',items:previewMcp});
+        previewReceive('mcpServers',{items:previewMcp});
       }
       if (message.action === 'setSkillEnabled') {
         const skill = previewSkills.find(item => item.path === message.path);
         if (skill) skill.enabled = message.enabled;
-        CodexGui.receive({type:'skills',items:previewSkills,errors:[]});
+        previewReceive('skills',{items:previewSkills,errors:[]});
       }
       if (message.action === 'importSkill' && !previewSkills.some(item => item.name === 'imported-skill')) {
         previewSkills.push({name:'imported-skill',path:message.scope === 'user'?'C:\\Users\\demo\\.codex\\skills\\imported-skill\\SKILL.md':'E:\\Projects\\demo\\.codex\\skills\\imported-skill\\SKILL.md',description:'通过导入菜单添加的示例 Skill。',enabled:true,scope:message.scope === 'user'?'user':'repo',interface:{displayName:'Imported Skill',shortDescription:'导入后的 Skill 会自动启用'},dependencies:{tools:[]}});
-        CodexGui.receive({type:'skills',items:previewSkills,errors:[]});
+        previewReceive('skills',{items:previewSkills,errors:[]});
       }
       if (message.action !== 'ready') return;
       setTimeout(() => {
-        CodexGui.receive({type:'bootstrap',state:previewState});
-        CodexGui.receive({type:'message',entry:{kind:'user',title:'你',body:'先分析项目结构，然后把 Codex CLI 的全部修改捕获到修改列表。'}});
-        CodexGui.receive({type:'message',entry:{kind:'reasoning',title:'推理',itemId:'r1',body:'正在检查插件入口、app-server 协议和工作区快照边界。'}});
-        CodexGui.receive({type:'message',entry:{kind:'plan',title:'计划',itemId:'p1',body:'检查供应商协议并验证输入区交互'}});
-        CodexGui.receive({type:'message',entry:{kind:'command',title:'命令',itemId:'c1',body:'$ rg --files src/main\n\nsrc/main/java/com/codexgui/ui/CodexToolWindowPanel.java\nsrc/main/resources/web/app.css\n\n退出码：0'}});
-        CodexGui.receive({type:'message',entry:{kind:'assistant',title:'Codex',itemId:'a1',body:'已经完成单列工具窗重构。\n\n## 当前结构\n\n- 历史与设置改为页内切换\n- 用户消息右侧气泡，Codex 输出保持平面 Markdown\n- 修改面板固定在输入框上方\n\n```java\nvar capture = changeService.beginCaptureAsync();\n```'}});
-        CodexGui.receive({type:'changes',items:[{path:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java',kind:'MODIFIED',reversible:true,diff:'@@ -1 +1 @@\n-old\n+new\n+line'},{path:'src/main/resources/web/app.css',kind:'ADDED',reversible:true,diff:'@@ -0 +1 @@\n+styles'}]});
-        if (location.search.includes('question')) CodexGui.receive({type:'question',requestId:42,questions:[{id:'approach',header:'实现方案',question:'你希望设置页采用哪种信息结构？',isOther:true,options:[{label:'固定侧栏',description:'与 CC-Gui 一致，左侧分类始终可见，右侧只展示当前分类。'},{label:'分组长页',description:'所有设置按卡片连续排列，适合快速浏览但信息更拥挤。'},{label:'极简设置',description:'只保留模型、审批与权限，不符合当前完整复刻目标。'}]},{id:'density',header:'界面密度',question:'请选择更符合你习惯的密度。',isOther:false,options:[{label:'紧凑',description:'更接近 JetBrains 工具窗与 CC-Gui。'},{label:'宽松',description:'留白更多，适合独立大窗口。'}]}]});
+        if (location.search.includes('long')) {
+          previewState.messages = Array.from({length:205},(_,index)=>({
+            kind:index%2?'assistant':'user',
+            title:index%2?'Codex':'你',
+            itemId:`long-${index}`,
+            body:`长会话消息 ${index+1}`
+          }));
+          previewReceive('bootstrap',{state:previewState});
+          return;
+        }
+        previewReceive('bootstrap',{state:previewState});
+        previewReceive('message',{entry:{kind:'user',title:'你',body:'先分析项目结构，然后把 Codex CLI 的全部修改捕获到修改列表。'}});
+        previewReceive('message',{entry:{kind:'reasoning',title:'推理',itemId:'r1',body:'正在检查插件入口、app-server 协议和工作区快照边界。'}});
+        previewReceive('message',{entry:{kind:'plan',title:'计划',itemId:'p1',body:'检查供应商协议并验证输入区交互'}});
+        previewReceive('message',{entry:{kind:'command',title:'命令',itemId:'c1',body:'$ rg --files src/main\n\nsrc/main/java/com/codexgui/ui/CodexToolWindowPanel.java\nsrc/main/resources/web/app.css\n\n退出码：0'}});
+        previewReceive('message',{entry:{kind:'assistant',title:'Codex',itemId:'a1',body:'已经完成单列工具窗重构。\n\n## 当前结构\n\n- 历史与设置改为页内切换\n- 用户消息右侧气泡，Codex 输出保持平面 Markdown\n- 修改面板固定在输入框上方\n\n```java\nvar capture = changeService.beginCaptureAsync();\n```'}});
+        if (location.search.includes('stream')) {
+          previewReceive('replaceMessage',{entry:{kind:'assistant',title:'Codex',itemId:'stream-1',body:'流式'}});
+          previewReceive('appendMessage',{kind:'assistant',title:'Codex',itemId:'stream-1',delta:'回复'});
+          previewReceive('appendMessage',{kind:'assistant',title:'Codex',itemId:'stream-1',delta:'完成\n\n<script>window.previewInjected=true<\/script>安全内容'});
+        }
+        previewReceive('changes',{items:[{path:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java',kind:'MODIFIED',reversible:true,diff:'@@ -1 +1 @@\n-old\n+new\n+line'},{path:'src/main/resources/web/app.css',kind:'ADDED',reversible:true,diff:'@@ -0 +1 @@\n+styles'}]});
+        if (location.search.includes('question')) previewReceive('question',{questions:[{id:'approach',header:'实现方案',question:'你希望设置页采用哪种信息结构？',isOther:true,options:[{label:'固定侧栏',description:'与 CC-Gui 一致，左侧分类始终可见，右侧只展示当前分类。'},{label:'分组长页',description:'所有设置按卡片连续排列，适合快速浏览但信息更拥挤。'},{label:'极简设置',description:'只保留模型、审批与权限，不符合当前完整复刻目标。'}]},{id:'density',header:'界面密度',question:'请选择更符合你习惯的密度。',isOther:false,options:[{label:'紧凑',description:'更接近 JetBrains 工具窗与 CC-Gui。'},{label:'宽松',description:'留白更多，适合独立大窗口。'}]}]},{requestId:'42'});
       }, 0);
     };
   </script>
-  <script src="../src/main/resources/web/app.js?v=10"></script>
+  <script src="../build/generated-resources/web/app.js?v=11"></script>
 </body>
 </html>

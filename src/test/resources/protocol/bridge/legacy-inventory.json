@@ -1,0 +1,22 @@
+{
+  "commands": [
+    "ready", "reconnect", "send", "stop", "new", "closeSession", "activateSession",
+    "history", "openThread", "rename", "export", "pickFile", "pickImage", "dropFiles",
+    "cancelDrop", "composerBounds", "listProjectFiles", "removeAttachment", "removeFileReference",
+    "removeFileReferences", "addFileReferences", "reorderFileReferences", "acceptChange",
+    "revertChange", "acceptAll", "revertAll", "openChange", "compact", "review", "rewind",
+    "mcp", "usage", "setting", "selectProvider", "activateProviderProfile", "saveProviderProfile",
+    "deleteProviderProfile", "checkProviders", "behaviorSetting", "browseNotificationSound",
+    "testNotificationSound", "toggleStreaming", "toggleThinking", "saveInstructions", "savePrompt",
+    "deletePrompt", "selectPrompt", "saveAgent", "deleteAgent", "selectAgent", "loadMcp",
+    "reloadMcp", "loadSkills", "reloadSkills", "setSkillEnabled", "importSkill", "openSkill",
+    "openMcpConfig", "loginMcp", "saveMcp", "deleteMcp", "setMcpEnabled", "copyText",
+    "answerQuestions", "cancelQuestions", "conversationSearch", "openFile", "openUrl", "openSettings"
+  ],
+  "events": [
+    "bootstrap", "connection", "busy", "queue", "clear", "message", "replaceMessage",
+    "appendMessage", "history", "changes", "attachments", "fileReferences", "fileContext",
+    "projectFiles", "usage", "thread", "providers", "mcpServers", "mcpLog", "skillEnabled",
+    "skills", "question", "toast", "nativeDrag", "nativeDrop"
+  ]
+}

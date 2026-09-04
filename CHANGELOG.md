@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+## 0.5.0 - 2026-09-04
+
+- 项目正式更名为 `CodeDeck`；构建产物、JetBrains 插件与设置页统一使用新名称，同时保留插件 ID、配置存储和 Bridge 标识以兼容原有安装与用户数据。
+- 前端迁移到 TypeScript 与 esbuild，锁定 Node.js 和 npm 依赖；Gradle `check` 现在统一执行类型检查、Vitest、前端打包和 Java 测试。
+- Bridge 接收入口收敛为单一 receiver，页面状态由 store/reducer 管理；流式增量使用 `requestAnimationFrame` 按 Session 和消息合并，只更新目标消息节点。
+- 长会话改为每批加载 100 条历史消息；Markdown 使用 `marked` 渲染并经 DOMPurify 清洗，阻止回复内容注入脚本。
+- Settings 改为不可变运行时快照和枚举化受限值，并增加一次性 schema migration；项目文件搜索迁移到 JetBrains `ProjectFileIndex`，工作区路径与 UTF-8/可执行文件处理统一复用公共工具；ChangeSet 改用当前批量 VFS 事件接口刷新已跟踪路径。
+- 移除 JUnit 4 运行时；测试任务排除仅为旧测试框架引入的 IntelliJ `testFramework.jar`，业务测试全部由 JUnit 5 执行。
+- 统一插件构建配置、前端包元数据、README 和 Codex 客户端标识中的版本号为 `0.5.0`。
+- 新增最小 `ConversationProvider`、Provider capability/health 与统一 `TurnEvent`；Codex/Claude adapter 负责启动、取消及协议归一化，所有回合事件保留 Session、Turn 和 generation 身份。
+- `CodexToolWindowPanel` 收敛为 JCEF 创建、依赖组装、页面加载和 dispose；会话控制迁入 Controller，审批交互与注意力通知分别由粗粒度协调组件管理。
+- JCEF Bridge 升级为版本化 v1 envelope，统一携带 `requestId/sessionId/turnId/generation` 与独立 payload；Java sealed command/event、TypeScript discriminated union、共享 JSON Schema、fixtures 和预览页使用同一类型清单。
+- 未知 Bridge 版本、类型及缺失身份字段现在返回结构化 `protocol.error`；旧 `{action: ...}` 消息只从 Legacy adapter 兼容入口转换。
+- 新增 `PendingInteractionRegistry`，按 request、Session、Turn、generation、交互类型和截止时间隔离并清理并发审批与结构化提问。
+- Claude 文件修改改由 `PreToolUse` Hook 在 `Write`、`Edit` 与 `NotebookEdit` 执行前同步登记首次基线；项目级 relay 仅监听 loopback，并以 Session、Turn 和 generation 绑定的随机 token 拒绝缺失、畸形、越界及过期请求。
+- Claude Code 最低版本调整为 `2.1.210`；Hook relay 无法建立安全基线时会阻止对应文件工具，不再启用全工作区 Snapshot fallback。
+- 用 `ConversationChangeTracker` 替换全工作区 Snapshot：首次明确触碰保存 `PRESENT(bytes/hash)` 或 `ABSENT` 基线，摘要按实时 Document/VFS/磁盘内容计算；Accept 清除基线，Revert 恢复首次基线，监听器只刷新已跟踪路径。
+- 删除 `WorkspaceSnapshot`、旧 Snapshot 测试和“捕获 Git 忽略文件”设置；修改列表改用摘要行统计，打开 Diff 时才生成 baseline 到实时 current 的详情。
+- Codex app-server 引入 `STOPPED/STARTING/READY/STOPPING/FAILED/DISPOSED` 生命周期、专用执行器和 process generation；初始化、普通 RPC、OAuth 分别使用 20 秒、60 秒和 5 分钟超时，断线会清空对应 pending RPC，停止等待 2 秒后强制结束。
+- Claude Code 改为项目级服务并以完整 `TurnHandle` 管理进程；取消异常不再包装成执行失败，Codex 生命周期变化不会影响 Claude 回合。
+- 引入 Session Kernel，将线程、回合、供应商、消息、附件、队列、用量和忙碌状态统一归属到 `ConversationSession`；后台回调按 Session/Turn/generation 定向更新，不再通过切换活动页签写入状态。
+- 关闭会话现在会停止对应 Provider 回合、释放队列与会话状态；取消、关闭及旧 generation 的迟到事件会由 `SessionCoordinator` 丢弃。
+- 新增 Codex、Claude 与 Bridge 协议 fixture 及 Conversation ChangeSet 特征测试，固定多 Provider 重构前的关键行为。
+- 新增 push/Pull Request 插件验证工作流；业务测试统一使用 JUnit 5，并移除项目显式声明的 JUnit 4 运行时依赖。
+
 ## 0.4.4 - 2026-09-03
 
 - Skills 页面新增“个人 / 官方”来源筛选，默认仅显示个人 Skill；Codex 自带的 `openai-bundled`、`openai-primary-runtime` 和 `.system` 路径会被归为官方来源，并在卡片中显示来源标记。

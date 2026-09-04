@@ -8,7 +8,7 @@
 
 ```text
 JetBrains 工具窗标签栏（由 IDE 管理）
-└─ Codex GUI WebView
+└─ CodeDeck WebView
    ├─ 会话页
    │  ├─ 顶部会话栏（固定，单行）
    │  ├─ 消息壳（唯一伸缩并滚动的区域）

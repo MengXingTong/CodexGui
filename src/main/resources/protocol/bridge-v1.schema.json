@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://codexgui.local/protocol/bridge-v1.schema.json",
+  "title": "CodeDeck Bridge Protocol v1 Envelope",
+  "type": "object",
+  "required": ["v", "type", "requestId", "sessionId", "turnId", "generation", "payload"],
+  "additionalProperties": false,
+  "properties": {
+    "v": {"const": 1},
+    "type": {"type": "string", "enum": [
+      "ready", "reconnect", "send", "stop", "new", "closeSession", "activateSession",
+      "history", "openThread", "rename", "export", "pickFile", "pickImage", "dropFiles",
+      "cancelDrop", "composerBounds", "listProjectFiles", "removeAttachment", "removeFileReference",
+      "removeFileReferences", "addFileReferences", "reorderFileReferences", "acceptChange",
+      "revertChange", "acceptAll", "revertAll", "openChange", "compact", "review", "rewind",
+      "mcp", "usage", "setting", "selectProvider", "activateProviderProfile", "saveProviderProfile",
+      "deleteProviderProfile", "checkProviders", "behaviorSetting", "browseNotificationSound",
+      "testNotificationSound", "toggleStreaming", "toggleThinking", "saveInstructions", "savePrompt",
+      "deletePrompt", "selectPrompt", "saveAgent", "deleteAgent", "selectAgent", "loadMcp",
+      "reloadMcp", "loadSkills", "reloadSkills", "setSkillEnabled", "importSkill", "openSkill",
+      "openMcpConfig", "loginMcp", "saveMcp", "deleteMcp", "setMcpEnabled", "copyText",
+      "answerQuestions", "cancelQuestions", "conversationSearch", "openFile", "openUrl", "openSettings",
+      "bootstrap", "connection", "busy", "queue", "clear", "message", "replaceMessage",
+      "appendMessage", "changes", "attachments", "fileReferences", "fileContext", "projectFiles",
+      "thread", "providers", "mcpServers", "mcpLog", "skillEnabled", "skills", "question", "toast",
+      "nativeDrag", "nativeDrop", "protocol.error"
+    ]},
+    "requestId": {"type": "string", "minLength": 1},
+    "sessionId": {"type": "string", "minLength": 1},
+    "turnId": {"type": "string"},
+    "generation": {"type": "integer", "minimum": 0},
+    "payload": {"type": "object"}
+  },
+  "x-commandTypes": [
+    "ready", "reconnect", "send", "stop", "new", "closeSession", "activateSession",
+    "history", "openThread", "rename", "export", "pickFile", "pickImage", "dropFiles",
+    "cancelDrop", "composerBounds", "listProjectFiles", "removeAttachment", "removeFileReference",
+    "removeFileReferences", "addFileReferences", "reorderFileReferences", "acceptChange",
+    "revertChange", "acceptAll", "revertAll", "openChange", "compact", "review", "rewind",
+    "mcp", "usage", "setting", "selectProvider", "activateProviderProfile", "saveProviderProfile",
+    "deleteProviderProfile", "checkProviders", "behaviorSetting", "browseNotificationSound",
+    "testNotificationSound", "toggleStreaming", "toggleThinking", "saveInstructions", "savePrompt",
+    "deletePrompt", "selectPrompt", "saveAgent", "deleteAgent", "selectAgent", "loadMcp",
+    "reloadMcp", "loadSkills", "reloadSkills", "setSkillEnabled", "importSkill", "openSkill",
+    "openMcpConfig", "loginMcp", "saveMcp", "deleteMcp", "setMcpEnabled", "copyText",
+    "answerQuestions", "cancelQuestions", "conversationSearch", "openFile", "openUrl", "openSettings"
+  ],
+  "x-eventTypes": [
+    "bootstrap", "connection", "busy", "queue", "clear", "message", "replaceMessage",
+    "appendMessage", "history", "changes", "attachments", "fileReferences", "fileContext",
+    "projectFiles", "usage", "thread", "providers", "mcpServers", "mcpLog", "skillEnabled",
+    "skills", "question", "toast", "nativeDrag", "nativeDrop", "protocol.error"
+  ]
+}

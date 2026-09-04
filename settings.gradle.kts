@@ -5,4 +5,4 @@ pluginManagement {
     }
 }
 
-rootProject.name = "codex-gui"
+rootProject.name = "CodeDeck"

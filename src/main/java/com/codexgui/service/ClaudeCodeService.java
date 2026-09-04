@@ -1,14 +1,18 @@
 package com.codexgui.service;
 
+import com.codexgui.conversation.TurnHandle;
 import com.codexgui.settings.CodexSettingsState;
 import com.codexgui.settings.ProviderCredentialStore;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.intellij.openapi.Disposable;
+import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.SystemInfo;
 import com.intellij.util.concurrency.AppExecutorUtil;
+import org.jetbrains.annotations.NotNull;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -24,14 +28,19 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
+@Service(Service.Level.PROJECT)
 public final class ClaudeCodeService implements Disposable {
     private static final Logger LOG = Logger.getInstance(ClaudeCodeService.class);
     private static final Gson GSON = new Gson();
+    private static final String MINIMUM_VERSION = "2.1.210";
+    private static final Pattern VERSION_PATTERN = Pattern.compile("(?<!\\d)(\\d+)\\.(\\d+)\\.(\\d+)(?!\\d)");
 
     public interface Listener {
         default void onModel(String model) {}
@@ -43,15 +52,24 @@ public final class ClaudeCodeService implements Disposable {
     public record TurnResult(String sessionId, String model, String finalText) {}
 
     private final Path workingDirectory;
-    private final Map<String, Process> activeProcesses = new ConcurrentHashMap<>();
-    private final java.util.Set<String> cancelledSessions = ConcurrentHashMap.newKeySet();
+    private final ClaudeHookRelayService hookRelay;
+    private final Map<TurnHandle, Process> activeProcesses = new ConcurrentHashMap<>();
+    private final java.util.Set<TurnHandle> cancelledTurns = ConcurrentHashMap.newKeySet();
+    private final Set<TurnHandle> registeredHookTurns = ConcurrentHashMap.newKeySet();
+    private final Set<String> verifiedExecutables = ConcurrentHashMap.newKeySet();
+    private volatile boolean disposed;
 
-    public ClaudeCodeService(Path workingDirectory) {
-        this.workingDirectory = workingDirectory;
+    public ClaudeCodeService(Project project) {
+        this.workingDirectory = project.getBasePath() == null ? null : Path.of(project.getBasePath());
+        this.hookRelay = ClaudeHookRelayService.getInstance(project);
+    }
+
+    public static ClaudeCodeService getInstance(@NotNull Project project) {
+        return project.getService(ClaudeCodeService.class);
     }
 
     public CompletableFuture<TurnResult> startTurn(
-        String localSessionId,
+        TurnHandle turnHandle,
         String executable,
         String conversationId,
         String prompt,
@@ -59,12 +77,13 @@ public final class ClaudeCodeService implements Disposable {
         String effort,
         String approvalPolicy,
         String instructions,
-        CodexSettingsState.ProviderProfile provider,
+        CodexSettingsState.ProviderProfileSnapshot provider,
         Listener listener
     ) {
-        cancelledSessions.remove(localSessionId);
+        if (disposed) return CompletableFuture.failedFuture(new CancellationException("Claude Code 服务已释放"));
+        cancelledTurns.remove(turnHandle);
         return CompletableFuture.supplyAsync(() -> runTurn(
-            localSessionId, executable, conversationId, prompt, model, effort, approvalPolicy, instructions, provider, listener
+            turnHandle, executable, conversationId, prompt, model, effort, approvalPolicy, instructions, provider, listener
         ), AppExecutorUtil.getAppExecutorService());
     }
 
@@ -72,9 +91,12 @@ public final class ClaudeCodeService implements Disposable {
         var resolved = resolveExecutable(executable);
         try {
             var path = Path.of(resolved);
-            if (path.isAbsolute()) return Files.isRegularFile(path);
-            var process = new ProcessBuilder(command(resolved, "--version")).redirectErrorStream(true).start();
-            return process.waitFor(4, TimeUnit.SECONDS) && process.exitValue() == 0;
+            if (path.isAbsolute() && !Files.isRegularFile(path)) return false;
+            if (verifiedExecutables.contains(resolved)) return true;
+            var version = readVersion(resolved);
+            if (!supportsVersion(version)) return false;
+            verifiedExecutables.add(resolved);
+            return true;
         } catch (Exception ignored) {
             return false;
         }
@@ -84,15 +106,17 @@ public final class ClaudeCodeService implements Disposable {
         return resolveExecutable(executable);
     }
 
-    public boolean interrupt(String localSessionId) {
-        cancelledSessions.add(localSessionId);
-        var process = activeProcesses.remove(localSessionId);
-        if (process != null && process.isAlive()) process.destroy();
+    public boolean interrupt(TurnHandle turnHandle) {
+        if (turnHandle == null) return false;
+        cancelledTurns.add(turnHandle);
+        hookRelay.unregister(turnHandle);
+        var process = activeProcesses.remove(turnHandle);
+        if (process != null) terminate(process);
         return process != null;
     }
 
     private TurnResult runTurn(
-        String localSessionId,
+        TurnHandle turnHandle,
         String configuredExecutable,
         String conversationId,
         String prompt,
@@ -100,23 +124,82 @@ public final class ClaudeCodeService implements Disposable {
         String effort,
         String approvalPolicy,
         String instructions,
-        CodexSettingsState.ProviderProfile provider,
+        CodexSettingsState.ProviderProfileSnapshot provider,
         Listener listener
     ) {
-        if (cancelledSessions.contains(localSessionId)) throw new CancellationException("Claude Code 回合已停止");
         var executable = resolveExecutable(configuredExecutable);
         var sessionId = conversationId == null || conversationId.isBlank()
             ? java.util.UUID.randomUUID().toString()
             : conversationId;
+        ClaudeHookRelayService.HookRegistration hookRegistration = null;
+        try {
+            if (disposed || cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
+            ensureSupportedVersion(executable);
+            if (disposed || cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
+            hookRegistration = hookRelay.register(turnHandle);
+            registeredHookTurns.add(turnHandle);
+            if (disposed || cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
+            var arguments = arguments(
+                sessionId, conversationId, model, effort, approvalPolicy, instructions, hookRegistration.settingsJson());
+            var builder = new ProcessBuilder(command(executable, arguments.toArray(String[]::new)))
+                .directory(workingDirectory == null ? null : workingDirectory.toFile())
+                .redirectErrorStream(false);
+            applyProvider(builder, provider);
+            var process = builder.start();
+            activeProcesses.put(turnHandle, process);
+            // 停止请求可能发生在进程创建和登记之间，登记后再次检查才能避免漏停。
+            if (cancelledTurns.contains(turnHandle)) {
+                terminate(process);
+                throw new CancellationException("Claude Code 回合已停止");
+            }
+            writePrompt(process, prompt);
+
+            // 错误流独立排空，避免 Claude Code 输出较多诊断信息时阻塞。
+            var errorOutput = new StringBuilder();
+            AppExecutorUtil.getAppExecutorService().execute(() -> readErrors(process, errorOutput));
+            var result = readOutput(process, sessionId, listener);
+            var exitCode = process.waitFor();
+            if (cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
+            if (exitCode != 0) {
+                String detail;
+                synchronized (errorOutput) { detail = errorOutput.toString().trim(); }
+                if (detail.isBlank()) detail = "Claude Code 退出码：" + exitCode;
+                throw new IllegalStateException(detail);
+            }
+            return result;
+        } catch (Exception error) {
+            throw executionFailure(executable, error);
+        } finally {
+            if (hookRegistration != null) hookRelay.unregister(turnHandle);
+            registeredHookTurns.remove(turnHandle);
+            activeProcesses.remove(turnHandle);
+            cancelledTurns.remove(turnHandle);
+        }
+    }
+
+    private List<String> arguments(
+        String sessionId,
+        String conversationId,
+        String model,
+        String effort,
+        String approvalPolicy,
+        String instructions,
+        String hookSettings
+    ) {
         var arguments = new ArrayList<String>();
         arguments.add("-p");
         arguments.add("--verbose");
         arguments.add("--output-format");
         arguments.add("stream-json");
         arguments.add("--include-partial-messages");
+        arguments.add("--include-hook-events");
+        arguments.add("--settings");
+        arguments.add(hookSettings);
         arguments.add("--permission-mode");
         arguments.add(permissionMode(approvalPolicy));
         if (Objects.equals(approvalPolicy, "never")) arguments.add("--dangerously-skip-permissions");
+
+        // 新会话写入固定 ID 和用户指令，续接会话只恢复原 Claude 上下文。
         if (conversationId == null || conversationId.isBlank()) {
             arguments.add("--session-id");
             arguments.add(sessionId);
@@ -137,39 +220,60 @@ public final class ClaudeCodeService implements Disposable {
             arguments.add("--effort");
             arguments.add(normalizedEffort);
         }
+        return arguments;
+    }
 
-        try {
-            var builder = new ProcessBuilder(command(executable, arguments.toArray(String[]::new)))
-                .directory(workingDirectory == null ? null : workingDirectory.toFile())
-                .redirectErrorStream(false);
-            applyProvider(builder, provider);
-            var process = builder.start();
-            activeProcesses.put(localSessionId, process);
-            // 停止请求可能发生在进程创建和登记之间，登记后再次检查才能避免漏停。
-            if (cancelledSessions.contains(localSessionId)) {
-                process.destroy();
-                throw new CancellationException("Claude Code 回合已停止");
-            }
-            writePrompt(process, prompt);
-
-            // 错误流独立排空，避免 Claude Code 输出较多诊断信息时阻塞。
-            var errorOutput = new StringBuilder();
-            AppExecutorUtil.getAppExecutorService().execute(() -> readErrors(process, errorOutput));
-            var result = readOutput(process, sessionId, listener);
-            var exitCode = process.waitFor();
-            if (exitCode != 0) {
-                String detail;
-                synchronized (errorOutput) { detail = errorOutput.toString().trim(); }
-                if (detail.isBlank()) detail = "Claude Code 退出码：" + exitCode;
-                throw new IllegalStateException(detail);
-            }
-            return result;
-        } catch (Exception error) {
-            throw new IllegalStateException("无法运行 Claude Code（" + executable + "）：" + error.getMessage(), error);
-        } finally {
-            activeProcesses.remove(localSessionId);
-            cancelledSessions.remove(localSessionId);
+    private void ensureSupportedVersion(String executable) throws IOException, InterruptedException {
+        if (verifiedExecutables.contains(executable)) return;
+        var version = readVersion(executable);
+        if (!supportsVersion(version)) {
+            var displayVersion = version.lines().findFirst().orElse("无法识别").trim();
+            throw new IllegalStateException(
+                "需要 Claude Code " + MINIMUM_VERSION + " 或更高版本，当前版本：" + displayVersion);
         }
+        verifiedExecutables.add(executable);
+    }
+
+    private String readVersion(String executable) throws IOException, InterruptedException {
+        var process = new ProcessBuilder(command(executable, "--version")).redirectErrorStream(true).start();
+        if (!process.waitFor(4, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            throw new IllegalStateException("读取 Claude Code 版本超时");
+        }
+        var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+        if (process.exitValue() != 0) throw new IllegalStateException(
+            output.isBlank() ? "无法读取 Claude Code 版本" : output);
+        return output;
+    }
+
+    static boolean supportsVersion(String output) {
+        var matcher = VERSION_PATTERN.matcher(Objects.requireNonNullElse(output, ""));
+        if (!matcher.find()) return false;
+        var version = new int[] {
+            Integer.parseInt(matcher.group(1)),
+            Integer.parseInt(matcher.group(2)),
+            Integer.parseInt(matcher.group(3))
+        };
+        var minimum = new int[] {2, 1, 210};
+        for (var index = 0; index < version.length; index++) {
+            if (version[index] > minimum[index]) return true;
+            if (version[index] < minimum[index]) return false;
+        }
+        return true;
+    }
+
+    static RuntimeException executionFailure(String executable, Exception error) {
+        if (error instanceof CancellationException cancellation) return cancellation;
+        return new IllegalStateException("无法运行 Claude Code（" + executable + "）：" + error.getMessage(), error);
+    }
+
+    private void terminate(Process process) {
+        if (!process.isAlive()) return;
+        process.destroy();
+        // 中断操作可能来自 EDT；延迟检查后强制结束，避免阻塞工具窗。
+        CompletableFuture.delayedExecutor(2, TimeUnit.SECONDS).execute(() -> {
+            if (process.isAlive()) process.destroyForcibly();
+        });
     }
 
     private TurnResult readOutput(Process process, String fallbackSessionId, Listener listener) throws IOException {
@@ -255,13 +359,13 @@ public final class ClaudeCodeService implements Disposable {
         }
     }
 
-    private void applyProvider(ProcessBuilder builder, CodexSettingsState.ProviderProfile provider) {
-        if (provider == null || provider.builtIn) return;
-        var apiKey = ProviderCredentialStore.get(provider.id);
+    private void applyProvider(ProcessBuilder builder, CodexSettingsState.ProviderProfileSnapshot provider) {
+        if (provider == null || provider.builtIn()) return;
+        var apiKey = ProviderCredentialStore.get(provider.id());
         if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("当前 Claude 供应商尚未配置 API 密钥");
-        builder.environment().put("ANTHROPIC_BASE_URL", provider.baseUrl);
+        builder.environment().put("ANTHROPIC_BASE_URL", provider.baseUrl());
         // 网关通常使用认证令牌，官方兼容端点也可以选择标准 API Key。
-        if (Objects.equals(provider.claudeAuthType, "api-key")) {
+        if (Objects.equals(provider.claudeAuthType(), "api-key")) {
             builder.environment().put("ANTHROPIC_API_KEY", apiKey);
             builder.environment().remove("ANTHROPIC_AUTH_TOKEN");
         } else {
@@ -270,17 +374,8 @@ public final class ClaudeCodeService implements Disposable {
         }
     }
 
-    private List<String> command(String executable, String... arguments) {
-        var command = new ArrayList<String>();
-        var normalized = executable.toLowerCase(Locale.ROOT);
-        if (SystemInfo.isWindows && (normalized.endsWith(".cmd") || normalized.endsWith(".bat") || !normalized.endsWith(".exe"))) {
-            command.add("cmd.exe");
-            command.add("/d");
-            command.add("/c");
-        }
-        command.add(executable);
-        command.addAll(List.of(arguments));
-        return command;
+    static List<String> command(String executable, String... arguments) {
+        return ExecutableCommand.build(executable, List.of(arguments));
     }
 
     private String resolveExecutable(String configured) {
@@ -317,7 +412,7 @@ public final class ClaudeCodeService implements Disposable {
         }
     }
 
-    private String permissionMode(String approvalPolicy) {
+    static String permissionMode(String approvalPolicy) {
         return switch (Objects.requireNonNullElse(approvalPolicy, "on-request")) {
             case "untrusted" -> "manual";
             case "never" -> "bypassPermissions";
@@ -325,7 +420,7 @@ public final class ClaudeCodeService implements Disposable {
         };
     }
 
-    private String effort(String effort) {
+    static String effort(String effort) {
         return switch (Objects.requireNonNullElse(effort, "high")) {
             case "minimal" -> "low";
             case "ultra" -> "max";
@@ -359,10 +454,12 @@ public final class ClaudeCodeService implements Disposable {
 
     @Override
     public void dispose() {
-        activeProcesses.values().forEach(process -> {
-            if (process.isAlive()) process.destroy();
-        });
+        disposed = true;
+        registeredHookTurns.forEach(hookRelay::unregister);
+        registeredHookTurns.clear();
+        activeProcesses.values().forEach(this::terminate);
         activeProcesses.clear();
-        cancelledSessions.clear();
+        cancelledTurns.clear();
+        verifiedExecutables.clear();
     }
 }

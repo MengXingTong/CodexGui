@@ -4,6 +4,7 @@ import com.codexgui.settings.CodexSettingsState;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class CodexAppServerServiceTest {
@@ -32,5 +33,33 @@ class CodexAppServerServiceTest {
         assertFalse(command.stream().anyMatch(value -> value.startsWith("model_provider=")));
         assertTrue(command.contains("app-server"));
         assertTrue(command.contains("--stdio"));
+    }
+
+    @Test
+    void lifecycleRejectsOldProcessGenerationAcrossRestartAndDispose() {
+        var lifecycle = new CodexAppServerService.Lifecycle();
+
+        var firstGeneration = lifecycle.beginStart();
+        assertEquals(CodexAppServerService.LifecycleState.STARTING, lifecycle.state());
+        assertTrue(lifecycle.transition(firstGeneration, CodexAppServerService.LifecycleState.READY));
+
+        lifecycle.beginStop();
+        assertEquals(CodexAppServerService.LifecycleState.STOPPING, lifecycle.state());
+        assertTrue(lifecycle.transition(firstGeneration, CodexAppServerService.LifecycleState.STOPPED));
+        var secondGeneration = lifecycle.beginStart();
+
+        assertFalse(lifecycle.transition(firstGeneration, CodexAppServerService.LifecycleState.READY));
+        assertTrue(lifecycle.transition(secondGeneration, CodexAppServerService.LifecycleState.FAILED));
+        lifecycle.dispose();
+        assertFalse(lifecycle.transition(secondGeneration, CodexAppServerService.LifecycleState.READY));
+        assertEquals(CodexAppServerService.LifecycleState.DISPOSED, lifecycle.state());
+    }
+
+    @Test
+    void appliesDedicatedRpcTimeouts() {
+        assertEquals(60, CodexAppServerService.timeoutSeconds("thread/list"));
+        assertEquals(300, CodexAppServerService.timeoutSeconds("mcpServer/oauth/login"));
+        assertEquals(20, CodexAppServerService.INITIALIZE_TIMEOUT_SECONDS);
+        assertEquals(2, CodexAppServerService.STOP_TIMEOUT_SECONDS);
     }
 }

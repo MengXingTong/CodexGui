@@ -4,6 +4,7 @@ export interface ConversationMessage {
   body: string;
   itemId?: string;
   elapsedMs?: number;
+  createdAtEpochMs?: number;
   fileReferencePaths?: string[];
 }
 
@@ -16,6 +17,7 @@ export interface BridgeState {
   title?: unknown;
   threadId?: unknown;
   history?: unknown[];
+  historyProvider?: string;
   changes?: unknown[];
   attachments?: unknown[];
   fileReferences?: unknown[];
@@ -39,6 +41,16 @@ export interface Store<TState, TEvent> {
   dispatch(event: TEvent): TState;
 }
 
+export function copyStateFields(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
+  keys: readonly string[],
+): void {
+  keys.forEach(key => {
+    target[key] = source[key];
+  });
+}
+
 export function createStore<TState, TEvent>(
   initialState: TState,
   reducer: (state: TState, event: TEvent) => TState,
@@ -57,6 +69,7 @@ export function reduceBridgeEvent(state: BridgeState, event: ReducedEvent): Brid
   switch (event.type) {
     case 'bootstrap':
       Object.assign(state, object(event.state));
+      state.messages = state.messages.map(message => withCreatedAt(message));
       break;
     case 'connection':
       state.connected = Boolean(event.connected);
@@ -78,7 +91,7 @@ export function reduceBridgeEvent(state: BridgeState, event: ReducedEvent): Brid
       state.visibleMessageCount = 100;
       break;
     case 'message':
-      state.messages.push(event.entry as ConversationMessage);
+      state.messages.push(withCreatedAt(event.entry as ConversationMessage));
       break;
     case 'replaceMessage':
       replaceMessage(state.messages, event.entry as ConversationMessage);
@@ -86,7 +99,10 @@ export function reduceBridgeEvent(state: BridgeState, event: ReducedEvent): Brid
     case 'appendMessage':
       appendMessage(state.messages, event);
       break;
-    case 'history': state.history = array(event.items); break;
+    case 'history':
+      state.history = array(event.items);
+      state.historyProvider = string(event.provider);
+      break;
     case 'changes': state.changes = array(event.items); break;
     case 'attachments': state.attachments = array(event.items); break;
     case 'fileReferences': state.fileReferences = array(event.items); break;
@@ -109,6 +125,10 @@ export function reduceBridgeEvent(state: BridgeState, event: ReducedEvent): Brid
       break;
   }
   return state;
+}
+
+export function isProviderChange(currentProvider: unknown, requestedProvider: unknown): boolean {
+  return normalizeProvider(currentProvider) !== normalizeProvider(requestedProvider);
 }
 
 export interface StreamAppendEvent extends ReducedEvent {
@@ -148,8 +168,8 @@ export function createStreamBatcher(
 
 function replaceMessage(messages: ConversationMessage[], entry: ConversationMessage) {
   const index = messages.findIndex(message => message.itemId === entry.itemId);
-  if (index >= 0) messages[index] = entry;
-  else messages.push(entry);
+  if (index >= 0) messages[index] = withCreatedAt(entry, messages[index].createdAtEpochMs);
+  else messages.push(withCreatedAt(entry));
 }
 
 function appendMessage(messages: ConversationMessage[], event: ReducedEvent) {
@@ -164,7 +184,13 @@ function appendMessage(messages: ConversationMessage[], event: ReducedEvent) {
     title: string(event.title) || 'Codex',
     body: string(event.delta),
     itemId,
+    createdAtEpochMs: positiveNumber(event.createdAtEpochMs) || Date.now(),
   });
+}
+
+function withCreatedAt(message: ConversationMessage, fallback?: number): ConversationMessage {
+  const createdAtEpochMs = positiveNumber(message.createdAtEpochMs) || positiveNumber(fallback) || Date.now();
+  return message.createdAtEpochMs === createdAtEpochMs ? message : {...message, createdAtEpochMs};
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -181,6 +207,10 @@ function string(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function normalizeProvider(value: unknown): string {
+  return value === 'claude' ? 'claude' : 'codex';
+}
+
 function number(value: unknown): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -188,4 +218,9 @@ function number(value: unknown): number {
 
 function nonNegative(value: unknown): number {
   return Math.max(0, number(value));
+}
+
+function positiveNumber(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }

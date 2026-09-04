@@ -128,9 +128,9 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         public String channel = CODEX_CHANNEL;
         public String name = "";
         public String baseUrl = "";
+        // 仅记录该供应商在聊天模型选择器中的上次选择，不属于供应商连接配置。
         public String model = "";
         public String wireApi = "responses";
-        public String claudeAuthType = "auth-token";
         public boolean builtIn;
         public int revision = 1;
 
@@ -148,7 +148,6 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
             return new ProviderProfileSnapshot(
                 id, ProviderChannel.from(channel), name, baseUrl, model,
                 "chat".equals(wireApi) ? "chat" : "responses",
-                "api-key".equals(claudeAuthType) ? "api-key" : "auth-token",
                 builtIn, Math.max(1, revision)
             );
         }
@@ -161,7 +160,6 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         String baseUrl,
         String model,
         String wireApi,
-        String claudeAuthType,
         boolean builtIn,
         int revision
     ) {
@@ -172,7 +170,6 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
             baseUrl = Objects.requireNonNullElse(baseUrl, "");
             model = Objects.requireNonNullElse(model, "");
             wireApi = Objects.requireNonNullElse(wireApi, "responses");
-            claudeAuthType = Objects.requireNonNullElse(claudeAuthType, "auth-token");
             revision = Math.max(1, revision);
         }
     }
@@ -307,7 +304,6 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
             if (item.baseUrl == null) item.baseUrl = "";
             if (item.model == null) item.model = "";
             if (!"chat".equals(item.wireApi)) item.wireApi = "responses";
-            if (!"api-key".equals(item.claudeAuthType)) item.claudeAuthType = "auth-token";
             if (item.revision < 1) item.revision = 1;
         }
         addBuiltInProvider(CODEX_LOCAL_PROVIDER_ID, CODEX_CHANNEL, "Codex 本地配置");

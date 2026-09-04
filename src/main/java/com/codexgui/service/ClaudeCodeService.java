@@ -23,7 +23,9 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -31,8 +33,12 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
 @Service(Service.Level.PROJECT)
@@ -40,7 +46,16 @@ public final class ClaudeCodeService implements Disposable {
     private static final Logger LOG = Logger.getInstance(ClaudeCodeService.class);
     private static final Gson GSON = new Gson();
     private static final String MINIMUM_VERSION = "2.1.210";
+    static final int FIRST_RESPONSE_TIMEOUT_SECONDS = 90;
+    private static final int MAX_ERROR_OUTPUT_CHARS = 16_384;
+    private static final int MAX_LOG_DIAGNOSTIC_CHARS = 1_000;
     private static final Pattern VERSION_PATTERN = Pattern.compile("(?<!\\d)(\\d+)\\.(\\d+)\\.(\\d+)(?!\\d)");
+    private static final Pattern BEARER_SECRET_PATTERN = Pattern.compile("(?i)(Bearer\\s+)[A-Za-z0-9._~+/=-]+");
+    private static final Pattern NAMED_SECRET_PATTERN = Pattern.compile(
+        "(?i)(\\\"?(?:authorization|x-api-key|api[_-]?key|anthropic_api_key|anthropic_auth_token|access[_-]?token|token)\\\"?\\s*[=:]\\s*\\\"?)[^\\s\\\",;}]+"
+    );
+
+    private enum FirstResponseState { WAITING, RECEIVED, TIMED_OUT }
 
     public interface Listener {
         default void onModel(String model) {}
@@ -50,6 +65,10 @@ public final class ClaudeCodeService implements Disposable {
     }
 
     public record TurnResult(String sessionId, String model, String finalText) {}
+    public record HistoryItem(String id, String title, long updatedAtEpochMs) {}
+    public record HistoryEntry(HistoryEntryKind kind, String body, String itemId, long createdAtEpochMs) {}
+    public record HistoryConversation(String id, String title, List<HistoryEntry> entries) {}
+    public enum HistoryEntryKind { USER, ASSISTANT, REASONING, COMMAND }
 
     private final Path workingDirectory;
     private final ClaudeHookRelayService hookRelay;
@@ -106,6 +125,28 @@ public final class ClaudeCodeService implements Disposable {
         return resolveExecutable(executable);
     }
 
+    public CompletableFuture<List<HistoryItem>> listHistory(String searchTerm) {
+        var directory = historyDirectory();
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return readHistoryItems(directory, searchTerm);
+            } catch (IOException error) {
+                throw new CompletionException(error);
+            }
+        }, AppExecutorUtil.getAppExecutorService());
+    }
+
+    public CompletableFuture<HistoryConversation> readHistory(String sessionId) {
+        var directory = historyDirectory();
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return readHistoryConversation(directory, sessionId);
+            } catch (IOException error) {
+                throw new CompletionException(error);
+            }
+        }, AppExecutorUtil.getAppExecutorService());
+    }
+
     public boolean interrupt(TurnHandle turnHandle) {
         if (turnHandle == null) return false;
         cancelledTurns.add(turnHandle);
@@ -131,22 +172,31 @@ public final class ClaudeCodeService implements Disposable {
         var sessionId = conversationId == null || conversationId.isBlank()
             ? java.util.UUID.randomUUID().toString()
             : conversationId;
+        var startedAt = System.nanoTime();
         ClaudeHookRelayService.HookRegistration hookRegistration = null;
+        Path hookSettingsFile = null;
         try {
+            LOG.info("准备启动 Claude Code 回合：turn=" + turnHandle
+                + ", executable=" + executable
+                + ", model=" + display(model)
+                + ", provider=" + providerLabel(provider));
             if (disposed || cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
             ensureSupportedVersion(executable);
             if (disposed || cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
             hookRegistration = hookRelay.register(turnHandle);
             registeredHookTurns.add(turnHandle);
             if (disposed || cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
+            // Windows 原生命令行会破坏内联 JSON 中的引号，改用临时文件传递 Hook 设置。
+            hookSettingsFile = writeHookSettings(hookRegistration.settingsJson());
             var arguments = arguments(
-                sessionId, conversationId, model, effort, approvalPolicy, instructions, hookRegistration.settingsJson());
+                sessionId, conversationId, model, effort, approvalPolicy, instructions, hookSettingsFile.toString());
             var builder = new ProcessBuilder(command(executable, arguments.toArray(String[]::new)))
                 .directory(workingDirectory == null ? null : workingDirectory.toFile())
                 .redirectErrorStream(false);
             applyProvider(builder, provider);
             var process = builder.start();
             activeProcesses.put(turnHandle, process);
+            LOG.info("Claude Code 进程已启动：turn=" + turnHandle + ", pid=" + process.pid());
             // 停止请求可能发生在进程创建和登记之间，登记后再次检查才能避免漏停。
             if (cancelledTurns.contains(turnHandle)) {
                 terminate(process);
@@ -154,26 +204,229 @@ public final class ClaudeCodeService implements Disposable {
             }
             writePrompt(process, prompt);
 
-            // 错误流独立排空，避免 Claude Code 输出较多诊断信息时阻塞。
+            // 错误流独立排空并保留脱敏尾部，既避免阻塞，也为超时提供即时诊断。
             var errorOutput = new StringBuilder();
-            AppExecutorUtil.getAppExecutorService().execute(() -> readErrors(process, errorOutput));
-            var result = readOutput(process, sessionId, listener);
+            var errorLineCount = new AtomicInteger();
+            var errorReader = CompletableFuture.runAsync(
+                () -> readErrors(process, errorOutput, errorLineCount, turnHandle),
+                AppExecutorUtil.getAppExecutorService());
+            var firstResponseState = new AtomicReference<>(FirstResponseState.WAITING);
+            ScheduledFuture<?> firstResponseTimeout = AppExecutorUtil.getAppScheduledExecutorService().schedule(() -> {
+                // 超时只约束首个上游响应，CLI 本地初始化不能提前解除监视。
+                if (!firstResponseState.compareAndSet(FirstResponseState.WAITING, FirstResponseState.TIMED_OUT)) return;
+                LOG.warn(firstResponseTimeoutMessage(process.pid(), errorOutput));
+                terminate(process);
+            }, FIRST_RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+            TurnResult result;
+            try {
+                result = readOutput(process, sessionId, listener, type -> {
+                    if (!firstResponseState.compareAndSet(FirstResponseState.WAITING, FirstResponseState.RECEIVED)) return;
+                    LOG.info("Claude Code 收到首个响应事件：turn=" + turnHandle
+                        + ", pid=" + process.pid()
+                        + ", type=" + type
+                        + ", elapsedMs=" + elapsedMillis(startedAt));
+                });
+            } catch (IOException error) {
+                if (firstResponseState.get() == FirstResponseState.TIMED_OUT) {
+                    throw new IllegalStateException(firstResponseTimeoutMessage(process.pid(), errorOutput), error);
+                }
+                throw error;
+            } finally {
+                firstResponseTimeout.cancel(false);
+            }
             var exitCode = process.waitFor();
+            errorReader.join();
+            LOG.info("Claude Code 进程已结束：turn=" + turnHandle
+                + ", pid=" + process.pid()
+                + ", exitCode=" + exitCode
+                + ", elapsedMs=" + elapsedMillis(startedAt)
+                + ", stderrLines=" + errorLineCount.get());
             if (cancelledTurns.contains(turnHandle)) throw new CancellationException("Claude Code 回合已停止");
+            if (firstResponseState.get() == FirstResponseState.TIMED_OUT) {
+                throw new IllegalStateException(firstResponseTimeoutMessage(process.pid(), errorOutput));
+            }
             if (exitCode != 0) {
-                String detail;
-                synchronized (errorOutput) { detail = errorOutput.toString().trim(); }
+                var detail = diagnosticSummary(errorOutput);
                 if (detail.isBlank()) detail = "Claude Code 退出码：" + exitCode;
                 throw new IllegalStateException(detail);
             }
             return result;
         } catch (Exception error) {
+            if (error instanceof CancellationException) {
+                LOG.info("Claude Code 回合已取消：turn=" + turnHandle + ", elapsedMs=" + elapsedMillis(startedAt));
+            } else {
+                LOG.warn("Claude Code 回合失败：turn=" + turnHandle
+                    + ", elapsedMs=" + elapsedMillis(startedAt)
+                    + ", error=" + sanitizeDiagnostic(error.getMessage()), error);
+            }
             throw executionFailure(executable, error);
         } finally {
+            deleteHookSettings(hookSettingsFile);
             if (hookRegistration != null) hookRelay.unregister(turnHandle);
             registeredHookTurns.remove(turnHandle);
             activeProcesses.remove(turnHandle);
             cancelledTurns.remove(turnHandle);
+        }
+    }
+
+    static List<HistoryItem> readHistoryItems(Path directory, String searchTerm) throws IOException {
+        if (directory == null || !Files.isDirectory(directory)) return List.of();
+        var normalizedSearch = Objects.requireNonNullElse(searchTerm, "").trim().toLowerCase(Locale.ROOT);
+        try (var files = Files.list(directory)) {
+            return files
+                .filter(Files::isRegularFile)
+                .filter(path -> path.getFileName().toString().endsWith(".jsonl"))
+                .map(path -> historyItem(path, normalizedSearch))
+                .filter(Objects::nonNull)
+                .sorted(Comparator.comparingLong(HistoryItem::updatedAtEpochMs).reversed())
+                .limit(100)
+                .toList();
+        }
+    }
+
+    static HistoryConversation readHistoryConversation(Path directory, String sessionId) throws IOException {
+        if (directory == null || sessionId == null || !sessionId.matches("[0-9a-fA-F-]{36}")) {
+            throw new IOException("无效的 Claude 会话 ID");
+        }
+        var normalizedDirectory = directory.toAbsolutePath().normalize();
+        var path = normalizedDirectory.resolve(sessionId + ".jsonl").normalize();
+        if (!path.startsWith(normalizedDirectory) || !Files.isRegularFile(path)) {
+            throw new IOException("找不到 Claude 历史会话");
+        }
+
+        var entries = new ArrayList<HistoryEntry>();
+        var title = "";
+        try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                var event = parseHistoryEvent(line);
+                if (event == null || booleanValue(event, "isSidechain")) continue;
+                var timestamp = historyTimestamp(event);
+                var type = string(event, "type");
+                // 用户消息只保留真实文本，跳过工具结果和内部元数据。
+                if (Objects.equals(type, "user")) {
+                    var body = userHistoryText(event);
+                    if (body.isBlank()) continue;
+                    if (title.isBlank()) title = historyTitle(body);
+                    entries.add(new HistoryEntry(
+                        HistoryEntryKind.USER, body, historyItemId(event, entries.size()), timestamp));
+                    continue;
+                }
+                // 助手消息按内容块恢复，保留文本、思考和工具调用的原始顺序。
+                if (Objects.equals(type, "assistant")) {
+                    appendAssistantHistory(entries, event, timestamp);
+                }
+            }
+        }
+        if (title.isBlank()) title = "未命名会话";
+        return new HistoryConversation(sessionId, title, List.copyOf(entries));
+    }
+
+    private Path historyDirectory() {
+        if (workingDirectory == null) return null;
+        var projectKey = workingDirectory.toAbsolutePath().normalize().toString().replaceAll("[^A-Za-z0-9]", "-");
+        return Path.of(System.getProperty("user.home"), ".claude", "projects", projectKey);
+    }
+
+    private static HistoryItem historyItem(Path path, String normalizedSearch) {
+        var fileName = path.getFileName().toString();
+        var sessionId = fileName.substring(0, fileName.length() - ".jsonl".length());
+        if (!sessionId.matches("[0-9a-fA-F-]{36}")) return null;
+        try (var reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                var event = parseHistoryEvent(line);
+                if (event == null || booleanValue(event, "isSidechain")
+                    || !Objects.equals(string(event, "type"), "user")) continue;
+                var title = historyTitle(userHistoryText(event));
+                if (title.isBlank()) continue;
+                if (!normalizedSearch.isBlank() && !title.toLowerCase(Locale.ROOT).contains(normalizedSearch)) return null;
+                return new HistoryItem(sessionId, title, Files.getLastModifiedTime(path).toMillis());
+            }
+        } catch (IOException ignored) {
+            return null;
+        }
+        return null;
+    }
+
+    private static JsonObject parseHistoryEvent(String line) {
+        if (line == null || line.isBlank()) return null;
+        try {
+            return GSON.fromJson(line, JsonObject.class);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private static String userHistoryText(JsonObject event) {
+        if (booleanValue(event, "isMeta")) return "";
+        var message = object(event, "message");
+        if (message == null || !message.has("content")) return "";
+        var content = message.get("content");
+        if (content.isJsonPrimitive()) return content.getAsString().trim();
+        if (!content.isJsonArray()) return "";
+        var text = new StringBuilder();
+        for (var element : content.getAsJsonArray()) {
+            if (!element.isJsonObject()) continue;
+            var block = element.getAsJsonObject();
+            if (!Objects.equals(string(block, "type"), "text")) continue;
+            if (!text.isEmpty()) text.append('\n');
+            text.append(string(block, "text"));
+        }
+        return text.toString().trim();
+    }
+
+    private static void appendAssistantHistory(List<HistoryEntry> entries, JsonObject event, long timestamp) {
+        var message = object(event, "message");
+        if (message == null) return;
+        var blockIndex = 0;
+        for (var element : array(message, "content")) {
+            if (!element.isJsonObject()) continue;
+            var block = element.getAsJsonObject();
+            var blockType = string(block, "type");
+            var kind = switch (blockType) {
+                case "text" -> HistoryEntryKind.ASSISTANT;
+                case "thinking" -> HistoryEntryKind.REASONING;
+                case "tool_use" -> HistoryEntryKind.COMMAND;
+                default -> null;
+            };
+            if (kind == null) continue;
+            var body = switch (kind) {
+                case ASSISTANT -> string(block, "text");
+                case REASONING -> string(block, "thinking");
+                case COMMAND -> string(block, "name") + "\n\n" + GSON.toJson(object(block, "input"));
+                case USER -> "";
+            };
+            if (body.isBlank()) continue;
+            entries.add(new HistoryEntry(
+                kind, body, historyItemId(event, blockIndex++), timestamp));
+        }
+    }
+
+    private static String historyItemId(JsonObject event, int index) {
+        return value(event, "uuid", "claude-history") + ":" + index;
+    }
+
+    private static String historyTitle(String body) {
+        var normalized = Objects.requireNonNullElse(body, "").replaceAll("\\s+", " ").trim();
+        return normalized.length() <= 120 ? normalized : normalized.substring(0, 120) + "...";
+    }
+
+    private static long historyTimestamp(JsonObject event) {
+        try {
+            return Instant.parse(string(event, "timestamp")).toEpochMilli();
+        } catch (RuntimeException ignored) {
+            return System.currentTimeMillis();
+        }
+    }
+
+    private static boolean booleanValue(JsonObject event, String key) {
+        if (event == null || !event.has(key) || event.get(key).isJsonNull()) return false;
+        try {
+            return event.get(key).getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
         }
     }
 
@@ -184,7 +437,7 @@ public final class ClaudeCodeService implements Disposable {
         String effort,
         String approvalPolicy,
         String instructions,
-        String hookSettings
+        String hookSettingsFile
     ) {
         var arguments = new ArrayList<String>();
         arguments.add("-p");
@@ -194,7 +447,7 @@ public final class ClaudeCodeService implements Disposable {
         arguments.add("--include-partial-messages");
         arguments.add("--include-hook-events");
         arguments.add("--settings");
-        arguments.add(hookSettings);
+        arguments.add(hookSettingsFile);
         arguments.add("--permission-mode");
         arguments.add(permissionMode(approvalPolicy));
         if (Objects.equals(approvalPolicy, "never")) arguments.add("--dangerously-skip-permissions");
@@ -221,6 +474,26 @@ public final class ClaudeCodeService implements Disposable {
             arguments.add(normalizedEffort);
         }
         return arguments;
+    }
+
+    static Path writeHookSettings(String settingsJson) throws IOException {
+        var path = Files.createTempFile("codedeck-claude-settings-", ".json").toAbsolutePath();
+        try {
+            Files.writeString(path, settingsJson, StandardCharsets.UTF_8);
+            return path;
+        } catch (IOException error) {
+            Files.deleteIfExists(path);
+            throw error;
+        }
+    }
+
+    private void deleteHookSettings(Path path) {
+        if (path == null) return;
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException error) {
+            LOG.warn("无法清理 Claude Hook 临时设置文件：" + path, error);
+        }
     }
 
     private void ensureSupportedVersion(String executable) throws IOException, InterruptedException {
@@ -276,7 +549,12 @@ public final class ClaudeCodeService implements Disposable {
         });
     }
 
-    private TurnResult readOutput(Process process, String fallbackSessionId, Listener listener) throws IOException {
+    private TurnResult readOutput(
+        Process process,
+        String fallbackSessionId,
+        Listener listener,
+        java.util.function.Consumer<String> responseEventListener
+    ) throws IOException {
         var sessionId = fallbackSessionId;
         var model = "";
         var finalText = "";
@@ -288,10 +566,11 @@ public final class ClaudeCodeService implements Disposable {
                 try {
                     event = GSON.fromJson(line, JsonObject.class);
                 } catch (RuntimeException error) {
-                    LOG.debug("忽略无法解析的 Claude Code 输出：" + line, error);
+                    LOG.debug("忽略无法解析的 Claude Code 输出：" + sanitizeDiagnostic(line), error);
                     continue;
                 }
                 var type = string(event, "type");
+                if (isResponseEvent(type)) responseEventListener.accept(type);
                 // 初始化事件提供真实会话与模型，界面据此回填供应商状态。
                 if (Objects.equals(type, "system") && Objects.equals(string(event, "subtype"), "init")) {
                     sessionId = value(event, "session_id", sessionId);
@@ -346,32 +625,79 @@ public final class ClaudeCodeService implements Disposable {
         }
     }
 
-    private void readErrors(Process process, StringBuilder output) {
+    private void readErrors(
+        Process process,
+        StringBuilder output,
+        AtomicInteger lineCount,
+        TurnHandle turnHandle
+    ) {
         try (var reader = new BufferedReader(new InputStreamReader(process.getErrorStream(), StandardCharsets.UTF_8))) {
             String line;
             while ((line = reader.readLine()) != null) {
+                var diagnostic = sanitizeDiagnostic(line);
+                if (diagnostic.isBlank()) continue;
+                lineCount.incrementAndGet();
                 synchronized (output) {
                     if (!output.isEmpty()) output.append('\n');
-                    output.append(line);
+                    output.append(diagnostic);
+                    if (output.length() > MAX_ERROR_OUTPUT_CHARS) {
+                        output.delete(0, output.length() - MAX_ERROR_OUTPUT_CHARS);
+                    }
                 }
+                LOG.warn("Claude Code stderr：turn=" + turnHandle + ", " + diagnostic);
             }
-        } catch (IOException ignored) {
+        } catch (IOException error) {
+            if (process.isAlive()) LOG.warn("读取 Claude Code stderr 失败：turn=" + turnHandle, error);
         }
+    }
+
+    static String sanitizeDiagnostic(String value) {
+        var diagnostic = Objects.requireNonNullElse(value, "");
+        diagnostic = BEARER_SECRET_PATTERN.matcher(diagnostic).replaceAll("$1<redacted>");
+        diagnostic = NAMED_SECRET_PATTERN.matcher(diagnostic).replaceAll("$1<redacted>");
+        if (diagnostic.length() <= MAX_LOG_DIAGNOSTIC_CHARS) return diagnostic;
+        return diagnostic.substring(0, MAX_LOG_DIAGNOSTIC_CHARS) + "...";
+    }
+
+    static String firstResponseTimeoutMessage(long pid, StringBuilder errorOutput) {
+        var message = "Claude Code 在 " + FIRST_RESPONSE_TIMEOUT_SECONDS
+            + " 秒内未返回任何响应事件，已终止进程（PID " + pid
+            + "）。请检查供应商接口、模型名称和网络代理。";
+        var detail = diagnosticSummary(errorOutput);
+        return detail.isBlank() ? message : message + " 最近错误：" + detail;
+    }
+
+    private static String diagnosticSummary(StringBuilder output) {
+        synchronized (output) { return output.toString().trim(); }
+    }
+
+    static boolean isResponseEvent(String type) {
+        return Objects.equals(type, "stream_event")
+            || Objects.equals(type, "assistant")
+            || Objects.equals(type, "result");
+    }
+
+    private static String providerLabel(CodexSettingsState.ProviderProfileSnapshot provider) {
+        if (provider == null) return "unknown";
+        return provider.builtIn() ? "local" : provider.name() + " (" + provider.id() + ")";
+    }
+
+    private static String display(String value) {
+        return value == null || value.isBlank() ? "default" : value;
+    }
+
+    private static long elapsedMillis(long startedAt) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAt);
     }
 
     private void applyProvider(ProcessBuilder builder, CodexSettingsState.ProviderProfileSnapshot provider) {
         if (provider == null || provider.builtIn()) return;
         var apiKey = ProviderCredentialStore.get(provider.id());
-        if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("当前 Claude 供应商尚未配置 API 密钥");
+        if (apiKey == null || apiKey.isBlank()) throw new IllegalStateException("当前 Claude 供应商尚未配置认证令牌");
         builder.environment().put("ANTHROPIC_BASE_URL", provider.baseUrl());
-        // 网关通常使用认证令牌，官方兼容端点也可以选择标准 API Key。
-        if (Objects.equals(provider.claudeAuthType(), "api-key")) {
-            builder.environment().put("ANTHROPIC_API_KEY", apiKey);
-            builder.environment().remove("ANTHROPIC_AUTH_TOKEN");
-        } else {
-            builder.environment().put("ANTHROPIC_AUTH_TOKEN", apiKey);
-            builder.environment().remove("ANTHROPIC_API_KEY");
-        }
+        // 中转渠道统一使用 Bearer 令牌，并清除本机 API Key 避免覆盖当前认证。
+        builder.environment().put("ANTHROPIC_AUTH_TOKEN", apiKey);
+        builder.environment().remove("ANTHROPIC_API_KEY");
     }
 
     static List<String> command(String executable, String... arguments) {
@@ -429,21 +755,21 @@ public final class ClaudeCodeService implements Disposable {
         };
     }
 
-    private JsonObject object(JsonObject parent, String key) {
+    private static JsonObject object(JsonObject parent, String key) {
         if (parent == null || !parent.has(key) || !parent.get(key).isJsonObject()) return new JsonObject();
         return parent.getAsJsonObject(key);
     }
 
-    private Iterable<JsonElement> array(JsonObject parent, String key) {
+    private static Iterable<JsonElement> array(JsonObject parent, String key) {
         if (parent == null || !parent.has(key) || !parent.get(key).isJsonArray()) return List.of();
         return parent.getAsJsonArray(key);
     }
 
-    private String string(JsonObject object, String key) {
+    private static String string(JsonObject object, String key) {
         return value(object, key, "");
     }
 
-    private String value(JsonObject object, String key, String fallback) {
+    private static String value(JsonObject object, String key, String fallback) {
         if (object == null || !object.has(key) || object.get(key).isJsonNull()) return fallback;
         try {
             return object.get(key).getAsString();

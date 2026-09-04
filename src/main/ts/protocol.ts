@@ -45,6 +45,7 @@ type CommandPayload<T extends BridgeCommandType> =
 type EventPayload<T extends BridgeEventType> =
   T extends 'appendMessage' ? {itemId: string; kind: string; title: string; delta: string} :
   T extends 'projectFiles' ? {items: Array<{name: string; path: string}>} :
+  T extends 'toast' ? {message: string; providerSaveSuccess?: boolean} :
   T extends 'protocol.error' ? {code: string; message: string; receivedType?: string} :
   Record<string, unknown>;
 

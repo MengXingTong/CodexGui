@@ -205,7 +205,7 @@ public final class CodexAppServerService implements Disposable {
             var clientInfo = new JsonObject();
             clientInfo.addProperty("name", "codedeck-jetbrains");
             clientInfo.addProperty("title", "CodeDeck for JetBrains");
-            clientInfo.addProperty("version", "0.5.0");
+            clientInfo.addProperty("version", "0.5.1");
             var params = new JsonObject();
             params.add("clientInfo", clientInfo);
             params.add("capabilities", capabilities);
@@ -304,6 +304,9 @@ public final class CodexAppServerService implements Disposable {
         params.addProperty("limit", 100);
         params.addProperty("sortKey", "updated_at");
         params.addProperty("sortDirection", "desc");
+        var sourceKinds = new JsonArray();
+        sourceKinds.add("appServer");
+        params.add("sourceKinds", sourceKinds);
         if (project.getBasePath() != null) params.addProperty("cwd", project.getBasePath());
         if (searchTerm != null && !searchTerm.isBlank()) params.addProperty("searchTerm", searchTerm.trim());
         return request("thread/list", params);
@@ -347,6 +350,7 @@ public final class CodexAppServerService implements Disposable {
         params.addProperty("approvalPolicy", approvalPolicy);
         params.addProperty("sandbox", sandbox);
         params.addProperty("ephemeral", false);
+        params.addProperty("threadSource", "codedeck");
         // 只传递用户在插件设置中明确保存的指令，不注入第三方增强提示词。
         if (developerInstructions != null && !developerInstructions.isBlank()) {
             params.addProperty("developerInstructions", developerInstructions);
@@ -357,8 +361,33 @@ public final class CodexAppServerService implements Disposable {
     public CompletableFuture<JsonObject> resumeThread(String threadId) {
         var params = new JsonObject();
         params.addProperty("threadId", threadId);
-        params.addProperty("excludeTurns", false);
-        return request("thread/resume", params);
+        params.addProperty("excludeTurns", true);
+        return request("thread/resume", params).thenCompose(result -> {
+            var turns = new JsonArray();
+            return listThreadTurns(threadId, null, turns).thenApply(ignored -> {
+                var thread = result.getAsJsonObject("thread");
+                if (thread != null) thread.add("turns", turns);
+                return result;
+            });
+        });
+    }
+
+    private CompletableFuture<Void> listThreadTurns(String threadId, String cursor, JsonArray turns) {
+        var params = new JsonObject();
+        params.addProperty("threadId", threadId);
+        params.addProperty("limit", 100);
+        params.addProperty("sortDirection", "asc");
+        params.addProperty("itemsView", "full");
+        if (cursor != null && !cursor.isBlank()) params.addProperty("cursor", cursor);
+        return request("thread/turns/list", params).thenCompose(result -> {
+            // 按升序逐页合并完整 turn，保证历史消息顺序与原会话一致。
+            var data = result.getAsJsonArray("data");
+            if (data != null) data.forEach(turns::add);
+            var nextCursor = result.has("nextCursor") && !result.get("nextCursor").isJsonNull()
+                ? result.get("nextCursor").getAsString() : "";
+            if (nextCursor.isBlank()) return CompletableFuture.completedFuture(null);
+            return listThreadTurns(threadId, nextCursor, turns);
+        });
     }
 
     public CompletableFuture<JsonObject> readThread(String threadId) {

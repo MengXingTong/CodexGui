@@ -25,6 +25,7 @@ import com.codexgui.service.AttentionService;
 import com.codexgui.service.ConversationChangeTracker;
 import com.codexgui.service.NotificationSoundPlayer;
 import com.codexgui.service.ProjectFileSearch;
+import com.codexgui.service.ProviderModelService;
 import com.codexgui.service.Utf8IO;
 import com.codexgui.settings.CodexSettingsState;
 import com.codexgui.settings.CodexProjectSettingsState;
@@ -45,6 +46,7 @@ import com.intellij.ide.dnd.FileCopyPasteUtil;
 import com.intellij.openapi.ide.CopyPasteManager;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.EditorFactory;
 import com.intellij.openapi.editor.event.SelectionEvent;
 import com.intellij.openapi.editor.event.SelectionListener;
@@ -90,6 +92,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 final class CodexToolWindowController implements Disposable, CodexEventListener {
+    private static final Logger LOG = Logger.getInstance(CodexToolWindowController.class);
     private static final Gson GSON = new Gson();
     private static final DateTimeFormatter HISTORY_TIME = DateTimeFormatter.ofPattern("MM-dd HH:mm");
     private static final long PROJECT_FILE_CACHE_MILLIS = 2_000L;
@@ -106,11 +109,13 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private final SessionCoordinator sessionCoordinator = new SessionCoordinator(sessionRegistry);
     private final ApprovalCoordinator approvalCoordinator;
     private final AttentionService attentionService;
+    private final ProviderModelService providerModelService = new ProviderModelService();
     private final Consumer<ConversationChangeTracker.ChangeUpdate> changeListener;
     private final JBCefBrowser browser;
 
     private boolean pageReady;
-    private JsonArray codexModels = new JsonArray();
+    private final Map<String, JsonArray> providerModelOptions = new ConcurrentHashMap<>();
+    private final Map<String, String> activatingProviderByChannel = new ConcurrentHashMap<>();
     private final Map<String, StringBuilder> pendingCommandDeltas = new ConcurrentHashMap<>();
     private final java.util.Set<String> scheduledCommandDeltas = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> completedCommandItems = ConcurrentHashMap.newKeySet();
@@ -197,7 +202,11 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 });
                 case SEND -> sendInput(string(request, "text", ""));
                 case STOP -> interruptCurrentTurn();
-                case NEW -> newConversation(string(request, "title", ""), bool(request, "skipConfirmation", false));
+                case NEW -> newConversation(
+                    string(request, "title", ""),
+                    bool(request, "skipConfirmation", false),
+                    string(request, "provider", activeSession().provider())
+                );
                 case CLOSE_SESSION -> closeSession(command.sessionId().value());
                 case ACTIVATE_SESSION -> publishCurrentSession();
                 case HISTORY -> loadHistory(string(request, "search", ""));
@@ -231,7 +240,10 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 case MCP -> showMcpServers();
                 case USAGE -> showUsage();
                 case SETTING -> updateSetting(string(request, "key", ""), string(request, "value", ""));
-                case SELECT_PROVIDER -> selectProvider(string(request, "provider", "codex"));
+                case SELECT_PROVIDER -> selectProvider(
+                    string(request, "provider", "codex"),
+                    string(request, "title", "")
+                );
                 case ACTIVATE_PROVIDER_PROFILE -> activateProviderProfile(string(request, "id", ""));
                 case SAVE_PROVIDER_PROFILE -> saveProviderProfile(request);
                 case DELETE_PROVIDER_PROFILE -> deleteProviderProfile(string(request, "id", ""));
@@ -378,6 +390,12 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             toast("当前会话使用的供应商配置已变化，请开启新对话后继续");
             return;
         }
+        // 自定义供应商必须先由模型目录确定具体选择，禁止以空模型启动请求。
+        if (!activeProvider.builtIn && activeProvider.model.isBlank()) {
+            loadProviderModels(activeProvider);
+            toast("当前供应商尚未加载到可用模型，请等待模型目录加载完成后重试");
+            return;
+        }
         if (Objects.equals(session.provider(), "codex") && !codex.isConnected()) {
             var reconnectText = text;
             var sessionId = session.id();
@@ -522,6 +540,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             codexProvider.complete(turnHandle);
             sessionCoordinator.complete(turnHandle, current -> {
                 current.pendingUserBody(null);
+                changeService.refreshSession(current.id().value());
                 publishBusy(current);
                 var currentSettings = CodexSettingsState.getInstance().snapshot(CodexSettingsState.CODEX_CHANNEL);
                 notifyAttention("Codex 任务已完成", current.title(), currentSettings.taskCompletionNotificationEnabled(), currentSettings.taskCompletionSoundEnabled());
@@ -536,6 +555,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             sessionCoordinator.complete(turnHandle, current -> {
                 if (current.pendingUserMessageCount() > 0) current.pendingUserMessageCount(current.pendingUserMessageCount() - 1);
                 current.pendingUserBody(null);
+                changeService.refreshSession(current.id().value());
                 publishBusy(current);
                 if (!failed.cancelled()) asyncError(current, "无法发送消息", failed.error());
                 startNextQueuedInput(current);
@@ -603,8 +623,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var sessionId = session.id().value();
         var providerProfile = settings.provider();
         var conversationId = session.threadId();
-        var itemId = "claude:" + UUID.randomUUID();
-        var thinkingId = itemId + ":thinking";
+        var finalItemId = "claude:" + UUID.randomUUID();
         var streamedText = new StringBuilder();
         var toolIds = ConcurrentHashMap.<String>newKeySet();
         var prompt = claudePrompt(input);
@@ -625,14 +644,13 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             providerProfile
         );
         claudeProvider.startTurn(request, event -> handleClaudeTurnEvent(
-            sessionId, turnHandle, itemId, thinkingId, streamedText, toolIds, settings, event));
+            sessionId, turnHandle, finalItemId, streamedText, toolIds, settings, event));
     }
 
     private void handleClaudeTurnEvent(
         String sessionId,
         TurnHandle turnHandle,
-        String itemId,
-        String thinkingId,
+        String finalItemId,
         StringBuilder streamedText,
         java.util.Set<String> toolIds,
         CodexSettingsState.SettingsSnapshot settings,
@@ -653,11 +671,11 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 synchronized (streamedText) { streamedText.append(delta.text()); }
                 if (settings.streamResponses()) ApplicationManager.getApplication().invokeLater(() ->
                     sessionCoordinator.apply(turnHandle, current -> appendEntry(
-                        current, itemId, ConversationEntry.Kind.ASSISTANT, "Claude", delta.text())));
+                        current, delta.itemId(), ConversationEntry.Kind.ASSISTANT, "Claude", delta.text())));
             } else if (delta.kind() == TurnEvent.Delta.Kind.THINKING && settings.streamResponses()) {
                 ApplicationManager.getApplication().invokeLater(() -> sessionCoordinator.apply(
                     turnHandle, current -> appendEntry(
-                        current, thinkingId, ConversationEntry.Kind.REASONING, "思考", delta.text())));
+                        current, delta.itemId(), ConversationEntry.Kind.REASONING, "思考", delta.text())));
             }
             return;
         }
@@ -670,11 +688,11 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             return;
         }
         if (event instanceof TurnEvent.Completed completed) {
-            finishClaudeTurn(turnHandle, itemId, streamedText, toolIds, settings, completed, null);
+            finishClaudeTurn(turnHandle, finalItemId, streamedText, toolIds, settings, completed, null);
             return;
         }
         if (event instanceof TurnEvent.Failed failed) {
-            finishClaudeTurn(turnHandle, itemId, streamedText, toolIds, settings, null, failed);
+            finishClaudeTurn(turnHandle, finalItemId, streamedText, toolIds, settings, null, failed);
         }
     }
 
@@ -706,6 +724,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 } else if (failed != null && !failed.cancelled()) {
                     asyncError(current, "无法发送 Claude Code 消息", failed.error());
                 }
+                changeService.refreshSession(current.id().value());
                 if (current.pendingUserMessageCount() > 0) {
                     current.pendingUserMessageCount(current.pendingUserMessageCount() - 1);
                 }
@@ -779,10 +798,23 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     }
 
     private void loadModels() {
-        // CLI 尚未完成 initialize 时不能发送请求，等待连接事件重新加载。
+        loadModels(activeSession().provider());
+    }
+
+    private void loadModels(String channel) {
+        var profile = CodexSettingsState.getInstance().activeProvider(channel);
+        if (!profile.builtIn) {
+            loadProviderModels(profile);
+            return;
+        }
+        // Claude 本地配置由 CLI 在首个回合回填真实模型，不预设静态模型目录。
+        if (Objects.equals(channel, CodexSettingsState.CLAUDE_CHANNEL)) return;
+        // Codex CLI 尚未完成 initialize 时不能发送请求，等待连接事件重新加载。
         if (!codex.isConnected()) return;
+        var profileId = profile.id;
+        var profileRevision = profile.revision;
         codex.listModels().thenAccept(result -> {
-            var models = new JsonArray();
+            var modelIds = new ArrayList<String>();
             String defaultModel = null;
             var modelItems = array(result, "data");
             if (modelItems.isEmpty()) modelItems = array(result, "models");
@@ -791,47 +823,90 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 if (model.has("hidden") && model.get("hidden").getAsBoolean()) continue;
                 var id = string(model, "model", "");
                 if (id.isBlank()) id = string(model, "id", string(model, "slug", ""));
-                if (!id.isBlank()) models.add(id);
+                if (!id.isBlank()) modelIds.add(id);
                 if (model.has("isDefault") && model.get("isDefault").getAsBoolean()) defaultModel = id;
             }
-            var settings = CodexSettingsState.getInstance().getState();
-            if (settings.model.isBlank() && defaultModel != null) settings.model = defaultModel;
-            codexModels = models.deepCopy();
-            if (!Objects.equals(activeSession().provider(), "codex")) return;
-            var providerProfile = CodexSettingsState.getInstance().activeProvider(CodexSettingsState.CODEX_CHANNEL);
-            var event = event(BridgeEvent.Type.BOOTSTRAP);
-            var state = new JsonObject();
-            if (providerProfile.builtIn) {
-                state.add("models", models);
-                state.addProperty("model", settings.model);
-            } else {
-                var providerModels = new JsonArray();
-                providerModels.add(providerProfile.model);
-                state.add("models", providerModels);
-                state.addProperty("model", providerProfile.model);
-            }
-            event.add("state", state);
-            sendEvent(event);
+            var resolvedDefault = defaultModel;
+            ApplicationManager.getApplication().invokeLater(
+                () -> applyModelOptions(profileId, profileRevision, modelIds, resolvedDefault));
         }).exceptionally(error -> {
-            asyncError("无法读取 Codex 模型列表", error);
+            ApplicationManager.getApplication().invokeLater(() -> asyncError("无法读取 Codex 模型列表", error));
             return null;
         });
     }
 
-    private void selectProvider(String requestedProvider) {
+    private void loadProviderModels(CodexSettingsState.ProviderProfile profile) {
+        var apiKey = ProviderCredentialStore.get(profile.id);
+        if (apiKey == null || apiKey.isBlank()) return;
+        var profileId = profile.id;
+        var profileRevision = profile.revision;
+        providerModelService.listModels(profile.snapshot(), apiKey).thenAccept(modelIds ->
+            ApplicationManager.getApplication().invokeLater(
+                () -> applyModelOptions(profileId, profileRevision, modelIds, null)
+            )
+        ).exceptionally(error -> {
+            ApplicationManager.getApplication().invokeLater(() -> asyncError("无法读取供应商模型列表", error));
+            return null;
+        });
+    }
+
+    private void applyModelOptions(String profileId, int profileRevision, List<String> modelIds, String defaultModel) {
+        var settingsService = CodexSettingsState.getInstance();
+        var profile = settingsService.provider(profileId);
+        if (profile == null || profile.revision != profileRevision || modelIds.isEmpty()) return;
+
+        // 接口模型目录是最终依据；上次选择失效时切到接口建议项或首项。
+        var settings = settingsService.getState();
+        var currentModel = profile.builtIn ? settings.model : profile.model;
+        var nextModel = selectProviderModel(modelIds, currentModel, defaultModel);
+        if (profile.builtIn) settings.model = nextModel;
+        else profile.model = nextModel;
+        var models = new JsonArray();
+        modelIds.stream().distinct().forEach(models::add);
+        providerModelOptions.put(profile.id, models);
+
+        var activeProfile = settingsService.activeProvider(profile.channel);
+        if (!Objects.equals(activeSession().provider(), profile.channel)
+            || !Objects.equals(activeProfile.id, profile.id)) return;
+        if (!Objects.equals(currentModel, nextModel) && !currentModel.isBlank()) {
+            toast("当前供应商不支持模型 " + currentModel + "，已切换到 " + nextModel);
+        }
+        publishModelOptions();
+    }
+
+    static String selectProviderModel(List<String> modelIds, String currentModel, String suggestedModel) {
+        if (modelIds.isEmpty()) return "";
+        if (modelIds.contains(currentModel)) return currentModel;
+        if (modelIds.contains(suggestedModel)) return suggestedModel;
+        return modelIds.getFirst();
+    }
+
+    private void publishModelOptions() {
+        var settings = CodexSettingsState.getInstance().getState();
+        var state = new JsonObject();
+        state.add("models", providerModels(settings));
+        state.addProperty("model", activeModel(settings));
+        var event = event(BridgeEvent.Type.BOOTSTRAP);
+        event.add("state", state);
+        sendEvent(event);
+    }
+
+    private void selectProvider(String requestedProvider, String requestedTitle) {
         var session = activeSession();
         var selected = provider(requestedProvider);
-        if (Objects.equals(selected, session.provider())) return;
-        if (session.busy()) {
+        var changesChannel = !Objects.equals(selected, session.provider());
+        if (changesChannel && session.busy()) {
             toast("任务运行期间不能切换供应商");
             return;
         }
-        if (session.threadId() != null || !session.transcript().isEmpty()) {
-            toast("当前会话已绑定供应商，请在新页签或新会话中切换");
+        // 跨渠道切换时复用当前页签，并让目标渠道从空白会话开始。
+        if (changesChannel) {
+            newConversation(requestedTitle, true, selected);
+            toast(Objects.equals(selected, "claude") ? "已切换到 Claude 渠道" : "已切换到 GPT 渠道");
             return;
         }
 
-        // 供应商只在空白会话中切换，避免跨协议复用不兼容的会话 ID。
+        // 同渠道选择只刷新当前绑定，不清空已有会话。
         session.provider(selected);
         var settingsService = CodexSettingsState.getInstance();
         var settings = settingsService.getState();
@@ -839,9 +914,12 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var profile = settingsService.activeProvider(selected);
         session.providerProfileId(profile.id);
         session.providerRevision(profile.revision);
+        if (session.threadId() == null && session.transcript().isEmpty() && !requestedTitle.isBlank()) {
+            session.title(requestedTitle.trim());
+        }
         publishSettings();
         publishProviderStatus();
-        toast(Objects.equals(selected, "claude") ? "已切换到 Claude 渠道" : "已切换到 GPT 渠道");
+        loadModels(selected);
     }
 
     private void publishProviderStatus() {
@@ -872,18 +950,17 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     ) {
         var json = new JsonObject();
         var hasApiKey = profile.builtIn || ProviderCredentialStore.has(profile.id);
-        var configured = profile.builtIn || (!profile.baseUrl.isBlank() && !profile.model.isBlank() && hasApiKey);
+        var configured = profile.builtIn || (!profile.baseUrl.isBlank() && hasApiKey);
         json.addProperty("id", profile.id);
         json.addProperty("channel", profile.channel);
         json.addProperty("name", profile.name);
         json.addProperty("baseUrl", profile.baseUrl);
-        json.addProperty("model", profile.model);
         json.addProperty("wireApi", profile.wireApi);
-        json.addProperty("claudeAuthType", profile.claudeAuthType);
         json.addProperty("builtIn", profile.builtIn);
         json.addProperty("hasApiKey", hasApiKey);
         json.addProperty("available", profile.builtIn ? localAvailable : configured);
         json.addProperty("active", Objects.equals(settingsService.activeProviderId(profile.channel), profile.id));
+        json.addProperty("activating", Objects.equals(activatingProviderByChannel.get(profile.channel), profile.id));
         if (profile.builtIn) {
             var executable = Objects.equals(profile.channel, CodexSettingsState.CLAUDE_CHANNEL)
                 ? claude.resolvedExecutable(settingsService.getState().claudeExecutable)
@@ -901,11 +978,95 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             toast("任务运行期间不能切换供应商配置");
             return;
         }
-        if (!profile.builtIn && (profile.baseUrl.isBlank() || profile.model.isBlank() || !ProviderCredentialStore.has(profile.id))) {
-            toast("请先补全接口地址、API 密钥和模型");
+        if (!profile.builtIn && (!validProviderUrl(profile.baseUrl) || !ProviderCredentialStore.has(profile.id))) {
+            toast("请先补全接口地址和认证凭据");
             return;
         }
         if (Objects.equals(settingsService.activeProviderId(profile.channel), profile.id)) return;
+
+        // 内置配置由本机 CLI 提供模型；自定义配置必须先验证远端模型目录。
+        if (profile.builtIn) {
+            activatingProviderByChannel.remove(profile.channel);
+            completeProviderActivation(profile);
+            return;
+        }
+        var profileChannel = profile.channel;
+        var pendingProviderId = activatingProviderByChannel.put(profileChannel, profile.id);
+        if (Objects.equals(pendingProviderId, profile.id)) return;
+
+        var profileId = profile.id;
+        var profileRevision = profile.revision;
+        var apiKey = ProviderCredentialStore.get(profile.id);
+        // 凭据在检测开始前被外部清除时终止本次启用，避免留下永久检测状态。
+        if (apiKey == null || apiKey.isBlank()) {
+            activatingProviderByChannel.remove(profileChannel, profileId);
+            publishProviderStatus();
+            toast("请先补全接口地址和认证凭据");
+            return;
+        }
+        publishProviderStatus();
+        toast("正在读取供应商模型目录...");
+        providerModelService.listModels(profile.snapshot(), apiKey).thenAccept(modelIds ->
+            ApplicationManager.getApplication().invokeLater(
+                () -> completeCustomProviderActivation(profileChannel, profileId, profileRevision, modelIds)
+            )
+        ).exceptionally(error -> {
+            ApplicationManager.getApplication().invokeLater(
+                () -> failProviderActivation(profileChannel, profileId, profileRevision, error)
+            );
+            return null;
+        });
+    }
+
+    private void completeCustomProviderActivation(
+        String channel,
+        String profileId,
+        int profileRevision,
+        List<String> modelIds
+    ) {
+        // 同一渠道只接受最后一次启用请求的结果，避免慢请求覆盖后续选择。
+        if (!activatingProviderByChannel.remove(channel, profileId)) return;
+        var settingsService = CodexSettingsState.getInstance();
+        var profile = settingsService.provider(profileId);
+        // 请求期间配置被编辑或删除时丢弃旧结果，避免启用过期连接信息。
+        if (profile == null || profile.revision != profileRevision) {
+            if (profile != null) toast("供应商配置已变化，请重新启用");
+            publishProviderStatus();
+            return;
+        }
+        // 模型目录返回期间可能启动了任务，此时仍保持原供应商。
+        if (sessionRegistry.sessions().stream().anyMatch(ConversationSession::busy)) {
+            toast("任务运行期间不能切换供应商配置");
+            publishProviderStatus();
+            return;
+        }
+
+        var selectedModel = selectProviderModel(modelIds, profile.model, "");
+        if (selectedModel.isBlank()) {
+            toast("无法启用供应商：模型目录未返回可用模型");
+            publishProviderStatus();
+            return;
+        }
+        profile.model = selectedModel;
+        var models = new JsonArray();
+        modelIds.stream().distinct().forEach(models::add);
+        providerModelOptions.put(profile.id, models);
+        completeProviderActivation(profile);
+    }
+
+    private void failProviderActivation(String channel, String profileId, int profileRevision, Throwable error) {
+        // 用户已经选择其它供应商时忽略旧请求的失败结果。
+        if (!activatingProviderByChannel.remove(channel, profileId)) return;
+        var profile = CodexSettingsState.getInstance().provider(profileId);
+        // 只报告当前版本的失败，旧请求不能覆盖用户随后完成的编辑。
+        if (profile != null && profile.revision == profileRevision) {
+            toast("无法启用供应商：" + errorMessage(error));
+        }
+        publishProviderStatus();
+    }
+
+    private void completeProviderActivation(CodexSettingsState.ProviderProfile profile) {
+        var settingsService = CodexSettingsState.getInstance();
 
         // 配置按渠道全局启用；空白会话可直接跟随，已有会话保留旧版本并阻止误发。
         settingsService.setActiveProvider(profile.channel, profile.id);
@@ -926,53 +1087,70 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var settings = settingsService.getState();
         var requestedId = string(request, "id", "");
         var existing = requestedId.isBlank() ? null : settingsService.provider(requestedId);
-        if (existing != null && existing.builtIn) return;
+        if (existing != null && existing.builtIn) {
+            providerSaveResult(false, "内置供应商不能编辑");
+            return;
+        }
         var channel = provider(string(request, "channel", CodexSettingsState.CODEX_CHANNEL));
         var name = string(request, "name", "").trim();
         var baseUrl = string(request, "baseUrl", "").trim();
-        var model = string(request, "model", "").trim();
         var apiKey = string(request, "apiKey", "").trim();
-        if (name.isBlank() || baseUrl.isBlank() || model.isBlank()) {
-            toast("供应商名称、接口地址和模型不能为空");
+        if (name.isBlank() || baseUrl.isBlank()) {
+            providerSaveResult(false, "供应商名称和接口地址不能为空");
             return;
         }
         if (!validProviderUrl(baseUrl)) {
-            toast("接口地址必须是有效的 http 或 https 地址");
+            providerSaveResult(false, "接口地址必须是有效的 http 或 https 地址");
             return;
         }
         if (existing == null && apiKey.isBlank()) {
-            toast("新增供应商时必须填写 API 密钥");
+            providerSaveResult(false, "新增供应商时必须填写认证凭据");
             return;
         }
         var duplicate = settings.providers.stream().anyMatch(item -> !Objects.equals(item.id, requestedId)
             && Objects.equals(item.channel, channel) && item.name.equalsIgnoreCase(name));
         if (duplicate) {
-            toast("同一渠道下不能使用重复的供应商名称");
+            providerSaveResult(false, "同一渠道下不能使用重复的供应商名称");
             return;
         }
         var activeEdit = existing != null && Objects.equals(settingsService.activeProviderId(existing.channel), existing.id);
         if (activeEdit && sessionRegistry.sessions().stream().anyMatch(ConversationSession::busy)) {
-            toast("任务运行期间不能修改正在使用的供应商");
+            providerSaveResult(false, "任务运行期间不能修改正在使用的供应商");
             return;
         }
 
+        // 先写入凭据，失败时不修改供应商资料，前端可保留草稿继续重试。
         var profile = existing == null ? new CodexSettingsState.ProviderProfile() : existing;
         if (existing == null) profile.id = "provider-" + UUID.randomUUID();
+        try {
+            if (!apiKey.isBlank()) ProviderCredentialStore.set(profile.id, apiKey);
+            else if (bool(request, "clearApiKey", false)) ProviderCredentialStore.remove(profile.id);
+        } catch (RuntimeException error) {
+            LOG.warn("保存供应商认证凭据失败", error);
+            providerSaveResult(false, "无法安全保存认证凭据");
+            return;
+        }
+
+        // 供应商表单只保存连接信息，模型由启用后的模型选择器独立维护。
         profile.channel = channel;
         profile.name = name;
         profile.baseUrl = baseUrl;
-        profile.model = model;
         profile.wireApi = Objects.equals(string(request, "wireApi", "responses"), "chat") ? "chat" : "responses";
-        profile.claudeAuthType = Objects.equals(string(request, "claudeAuthType", "auth-token"), "api-key") ? "api-key" : "auth-token";
         if (existing != null) profile.revision++;
         if (existing == null) settings.providers.add(profile);
-        if (!apiKey.isBlank()) ProviderCredentialStore.set(profile.id, apiKey);
-        if (bool(request, "clearApiKey", false)) ProviderCredentialStore.remove(profile.id);
+        providerModelOptions.remove(profile.id);
 
         if (activeEdit) applyProviderRuntimeChange(profile.channel);
         publishSettings();
         publishProviderStatus();
-        toast(existing == null ? "供应商已添加" : "供应商配置已保存");
+        providerSaveResult(true, existing == null ? "供应商已添加" : "供应商配置已保存");
+    }
+
+    private void providerSaveResult(boolean success, String message) {
+        var event = event(BridgeEvent.Type.TOAST);
+        event.addProperty("message", message);
+        event.addProperty("providerSaveSuccess", success);
+        sendEvent(event);
     }
 
     private void deleteProviderProfile(String id) {
@@ -987,6 +1165,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         }
 
         settings.providers.remove(profile);
+        providerModelOptions.remove(profile.id);
         ProviderCredentialStore.remove(profile.id);
         if (active) {
             var fallbackId = Objects.equals(profile.channel, CodexSettingsState.CLAUDE_CHANNEL)
@@ -1010,8 +1189,11 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     }
 
     private void applyProviderRuntimeChange(String channel) {
-        if (!Objects.equals(channel, CodexSettingsState.CODEX_CHANNEL)) return;
-        codex.restart().thenRun(this::loadModels).exceptionally(error -> {
+        if (!Objects.equals(channel, CodexSettingsState.CODEX_CHANNEL)) {
+            loadModels(channel);
+            return;
+        }
+        codex.restart().thenRun(() -> loadModels(channel)).exceptionally(error -> {
             asyncError("切换 GPT 供应商失败", error);
             return null;
         });
@@ -1031,18 +1213,45 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private JsonArray providerModels(CodexSettingsState.StateData settings) {
         var provider = activeSession().provider();
         var profile = CodexSettingsState.getInstance().activeProvider(provider);
-        if (!profile.builtIn) {
-            var models = new JsonArray();
-            if (!profile.model.isBlank()) models.add(profile.model);
-            return models;
-        }
-        if (Objects.equals(provider, "codex")) return codexModels.deepCopy();
+        var loaded = providerModelOptions.get(profile.id);
+        if (loaded != null) return loaded.deepCopy();
         var models = new JsonArray();
-        if (!settings.claudeModel.isBlank()) models.add(settings.claudeModel);
+        var model = profile.builtIn
+            ? (Objects.equals(provider, "claude") ? settings.claudeModel : settings.model)
+            : profile.model;
+        if (!model.isBlank()) models.add(model);
         return models;
     }
 
     private void loadHistory(String search) {
+        var session = activeSession();
+        var historyProvider = session.provider();
+        // Claude 历史来自当前项目的 JSONL 文件，不经过 Codex app-server。
+        if (Objects.equals(historyProvider, CodexSettingsState.CLAUDE_CHANNEL)) {
+            claude.listHistory(search).thenAccept(history -> {
+                var items = new JsonArray();
+                for (var entry : history) {
+                    var item = new JsonObject();
+                    item.addProperty("id", entry.id());
+                    item.addProperty("title", entry.title());
+                    item.addProperty("favorite", false);
+                    item.addProperty("time", Instant.ofEpochMilli(entry.updatedAtEpochMs())
+                        .atZone(ZoneId.systemDefault()).format(HISTORY_TIME));
+                    items.add(item);
+                }
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    var current = sessionRegistry.find(session.id());
+                    if (current == session && Objects.equals(current.provider(), historyProvider)) {
+                        publishHistory(session, historyProvider, items);
+                    }
+                });
+            }).exceptionally(error -> {
+                ApplicationManager.getApplication().invokeLater(() -> asyncError(session, "无法读取 Claude 历史", error));
+                return null;
+            });
+            return;
+        }
+        // Codex 历史只从当前 app-server 的线程目录加载。
         if (!codex.isConnected()) return;
         codex.listThreads(search).thenAccept(result -> {
             var items = new JsonArray();
@@ -1058,15 +1267,61 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 if (thread.has("updatedAt")) item.addProperty("time", Instant.ofEpochSecond(thread.get("updatedAt").getAsLong()).atZone(ZoneId.systemDefault()).format(HISTORY_TIME));
                 items.add(item);
             }
-            var event = event(BridgeEvent.Type.HISTORY);
-            event.add("items", items);
-            sendEvent(event);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                var current = sessionRegistry.find(session.id());
+                if (current == session && Objects.equals(current.provider(), historyProvider)) {
+                    publishHistory(session, historyProvider, items);
+                }
+            });
         }).exceptionally(error -> null);
+    }
+
+    private void publishHistory(ConversationSession session, String provider, JsonArray items) {
+        var event = event(BridgeEvent.Type.HISTORY, session.id());
+        event.addProperty("provider", provider);
+        event.add("items", items);
+        sendEvent(event);
     }
 
     private void openThread(String threadId) {
         var session = activeSession();
         if (session.busy() || threadId.isBlank() || Objects.equals(session.threadId(), threadId)) return;
+        // Claude 会话直接解析项目历史，并绑定原 session ID 供后续 --resume 使用。
+        if (Objects.equals(session.provider(), CodexSettingsState.CLAUDE_CHANNEL)) {
+            claude.readHistory(threadId).thenAccept(history -> ApplicationManager.getApplication().invokeLater(() -> {
+                if (sessionRegistry.find(session.id()) != session
+                    || !Objects.equals(session.provider(), CodexSettingsState.CLAUDE_CHANNEL)) return;
+                approvalCoordinator.clearSession(session.id());
+                session.clearConversation();
+                session.threadId(history.id());
+                session.title(history.title());
+                publishClear(session);
+                for (var historyEntry : history.entries()) {
+                    var kind = ConversationEntry.Kind.valueOf(historyEntry.kind().name());
+                    var title = switch (kind) {
+                        // 用户消息沿用聊天区的用户标签。
+                        case USER -> "你";
+                        // 助手消息明确标记为 Claude。
+                        case ASSISTANT -> "Claude";
+                        // 思考内容使用统一的推理标签。
+                        case REASONING -> "思考过程";
+                        // 工具调用在历史中按命令条目展示。
+                        case COMMAND -> "工具调用";
+                        default -> "Claude";
+                    };
+                    addEntry(session, new ConversationEntry(
+                        kind, title, historyEntry.body(), historyEntry.itemId(), List.of(), historyEntry.createdAtEpochMs()));
+                }
+                publishAttachments(session);
+                publishFileReferences(session);
+                publishThread(session);
+            })).exceptionally(error -> {
+                ApplicationManager.getApplication().invokeLater(() -> asyncError(session, "无法打开 Claude 历史会话", error));
+                return null;
+            });
+            return;
+        }
+        // Codex 会话先恢复元数据，再通过分页接口加载完整 turns。
         codex.resumeThread(threadId).thenAccept(result -> {
             ApplicationManager.getApplication().invokeLater(() -> {
                 if (sessionRegistry.find(session.id()) == session) renderThread(session, result);
@@ -1091,17 +1346,20 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 renderCompletedItem(session, itemElement.getAsJsonObject());
             }
         }
+        publishAttachments(session);
+        publishFileReferences(session);
         publishThread(session);
     }
 
     private void newConversation() {
-        newConversation("", false);
+        newConversation("", false, activeSession().provider());
     }
 
-    private void newConversation(String requestedTitle, boolean skipConfirmation) {
+    private void newConversation(String requestedTitle, boolean skipConfirmation, String requestedProvider) {
         var session = activeSession();
         if (session.busy()) return;
-        var settings = CodexSettingsState.getInstance().getState();
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
         // 命令入口未完成前端确认时，使用原生确认框保护已有会话。
         if (!skipConfirmation && settings.newSessionConfirmEnabled && !session.transcript().isEmpty()
             && Messages.showYesNoDialog(project, "当前会话已有消息，确定要新建会话吗？", "新建会话", "新建", "取消", Messages.getQuestionIcon()) != Messages.YES) {
@@ -1114,8 +1372,11 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         approvalCoordinator.clearSession(session.id());
         // 新建会话时重置线程和输入上下文，避免旧附件或草稿带入新对话。
         session.clearConversation();
-        session.provider(provider(settings.activeProvider));
-        var activeProvider = CodexSettingsState.getInstance().activeProvider(session.provider());
+        var selectedProvider = provider(requestedProvider);
+        var changesChannel = !Objects.equals(session.provider(), selectedProvider);
+        session.provider(selectedProvider);
+        settings.activeProvider = selectedProvider;
+        var activeProvider = settingsService.activeProvider(session.provider());
         session.providerProfileId(activeProvider.id);
         session.providerRevision(activeProvider.revision);
         session.title(requestedTitle == null || requestedTitle.isBlank() ? "新会话" : requestedTitle.trim());
@@ -1123,6 +1384,12 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         publishAttachments(session);
         publishFileReferences(session);
         publishThread(session);
+        // 渠道变化后立即刷新供应商状态和模型，确保当前页签只使用目标渠道配置。
+        if (changesChannel) {
+            publishSettings();
+            publishProviderStatus();
+            loadModels(selectedProvider);
+        }
     }
 
     private void closeSession(String sessionId) {
@@ -1146,6 +1413,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private void publishClear(ConversationSession session) {
         var event = event(BridgeEvent.Type.CLEAR, session.id());
         event.addProperty("title", session.title());
+        event.addProperty("provider", session.provider());
         if (session.threadId() != null) event.addProperty("threadId", session.threadId());
         sendEvent(event);
     }
@@ -1739,11 +2007,15 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     }
 
     private void updateSetting(String key, String value) {
-        var settings = CodexSettingsState.getInstance().getState();
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
         // 模型值按供应商分别保存，避免切换后把另一套模型名称带入 CLI。
         switch (key) {
             case "model" -> {
-                if (Objects.equals(activeSession().provider(), "claude")) settings.claudeModel = value;
+                var provider = activeSession().provider();
+                var profile = settingsService.activeProvider(provider);
+                if (!profile.builtIn) profile.model = value;
+                else if (Objects.equals(provider, "claude")) settings.claudeModel = value;
                 else settings.model = value;
             }
             case "effort" -> settings.reasoningEffort = value;
@@ -2363,15 +2635,18 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     }
 
     private void replaceEntry(ConversationSession session, String itemId, ConversationEntry.Kind kind, String title, String body) {
-        var replacement = new ConversationEntry(kind, title, body, itemId);
         for (int index = 0; index < session.transcript().size(); index++) {
-            if (!Objects.equals(itemId, session.transcript().get(index).itemId())) continue;
+            var current = session.transcript().get(index);
+            if (!Objects.equals(itemId, current.itemId())) continue;
+            var replacement = new ConversationEntry(
+                kind, title, body, itemId, current.fileReferencePaths(), current.createdAtEpochMs());
             session.transcript().set(index, replacement);
             var event = event(BridgeEvent.Type.REPLACE_MESSAGE, session.id());
             event.add("entry", entryJson(replacement));
             sendEvent(event);
             return;
         }
+        var replacement = new ConversationEntry(kind, title, body, itemId);
         session.transcript().add(replacement);
         publishEntry(session, replacement);
     }
@@ -2384,7 +2659,9 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         for (var index = 0; index < session.transcript().size(); index++) {
             var current = session.transcript().get(index);
             if (!Objects.equals(itemId, current.itemId())) continue;
-            session.transcript().set(index, new ConversationEntry(kind, title, current.body() + delta, itemId));
+            session.transcript().set(index, new ConversationEntry(
+                kind, title, current.body() + delta, itemId,
+                current.fileReferencePaths(), current.createdAtEpochMs()));
             var event = event(BridgeEvent.Type.APPEND_MESSAGE, session.id());
             event.addProperty("itemId", itemId);
             event.addProperty("kind", kind.name().toLowerCase());
@@ -2403,6 +2680,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         json.addProperty("kind", entry.kind().name().toLowerCase());
         json.addProperty("title", entry.title());
         json.addProperty("body", entry.body());
+        json.addProperty("createdAtEpochMs", entry.createdAtEpochMs());
         if (!entry.fileReferencePaths().isEmpty()) {
             var references = new JsonArray();
             entry.fileReferencePaths().forEach(references::add);

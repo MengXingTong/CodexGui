@@ -17,6 +17,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -49,6 +50,24 @@ final class ClaudeHookRelayServiceTest {
         var details = tracker.readDetails("session", path);
         assertArrayEquals("before\n".getBytes(StandardCharsets.UTF_8), details.beforeContent());
         assertArrayEquals("after\n".getBytes(StandardCharsets.UTF_8), details.afterContent());
+    }
+
+    @Test
+    void windowsHookCommandForwardsEditPayloadFromStandardInput() throws Exception {
+        if (!System.getProperty("os.name", "").toLowerCase().contains("windows")) return;
+        var path = root.resolve("source.txt");
+        Files.writeString(path, "before\n", StandardCharsets.UTF_8);
+        var tracker = new ConversationChangeTracker(root);
+        relay = new ClaudeHookRelayService(tracker);
+        var registration = relay.register(handle("session", "turn", 1));
+        var process = new ProcessBuilder("cmd.exe", "/d", "/s", "/c", registration.command()).start();
+
+        process.getOutputStream().write(payload("Edit", "file_path", path.toString()).getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().close();
+
+        assertTrue(process.waitFor(10, TimeUnit.SECONDS));
+        assertEquals(0, process.exitValue(), new String(process.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+        assertTrue(tracker.isTracked("session", path));
     }
 
     @Test

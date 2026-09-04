@@ -19,7 +19,7 @@
         {id:'openrouter',channel:'codex',name:'OpenRouter',builtIn:false,active:true,available:true,hasApiKey:true,baseUrl:'https://openrouter.ai/api/v1',model:'openai/gpt-5.4',wireApi:'responses'},
         {id:'company-gateway',channel:'codex',name:'团队网关',builtIn:false,active:false,available:false,hasApiKey:false,baseUrl:'https://ai.example.com/v1',model:'gpt-5.4',wireApi:'chat'},
         {id:'claude-local',channel:'claude',name:'Claude 本地配置',builtIn:true,active:true,available:true,hasApiKey:true,executable:'C:\\Users\\demo\\AppData\\Roaming\\npm\\claude.exe'},
-        {id:'claude-proxy',channel:'claude',name:'Claude 团队代理',builtIn:false,active:false,available:true,hasApiKey:true,baseUrl:'https://claude.example.com',model:'claude-sonnet-4-6',claudeAuthType:'auth-token'}
+        {id:'claude-proxy',channel:'claude',name:'Claude 团队代理',builtIn:false,active:false,available:true,hasApiKey:true,baseUrl:'https://claude.example.com',model:'claude-sonnet-4-6'}
       ]
     });
     let previewReferenceSequence = 3;
@@ -59,14 +59,42 @@
       }
       if (message.action === 'activateProviderProfile') {
         const selected = previewState.providers.find(item => item.id === message.id);
+        if (selected && !selected.builtIn) {
+          selected.activating = true;
+          previewReceive('providers',{items:previewState.providers});
+          setTimeout(() => {
+            selected.activating = false;
+            if (location.search.includes('provider-activate-fail')) {
+              previewReceive('providers',{items:previewState.providers});
+              previewReceive('toast',{message:'无法启用供应商：供应商模型接口返回 HTTP 401'});
+              return;
+            }
+            const models = selected.model ? [selected.model, `${selected.channel}-fallback-model`] : [`${selected.channel}-first-model`,`${selected.channel}-second-model`];
+            selected.model = models[0];
+            previewState.providers.forEach(item => { if (item.channel === selected.channel) item.active = item.id === selected.id; });
+            if (previewState.provider === selected.channel) {
+              previewState.model = selected.model;
+              previewState.models = models;
+            }
+            previewReceive('providers',{items:previewState.providers});
+            previewReceive('bootstrap',{state:previewState});
+            previewReceive('toast',{message:`已启用供应商：${selected.name}`});
+          }, 80);
+          return;
+        }
         if (selected) previewState.providers.forEach(item => { if (item.channel === selected.channel) item.active = item.id === selected.id; });
         previewReceive('providers',{items:previewState.providers});
       }
       if (message.action === 'saveProviderProfile') {
+        if (location.search.includes('provider-save-fail')) {
+          setTimeout(() => previewReceive('toast',{message:'同一渠道下不能使用重复的供应商名称',providerSaveSuccess:false}), 80);
+          return;
+        }
         const existing = previewState.providers.find(item => item.id === message.id);
         const saved = {...message,id:message.id||`preview-${Date.now()}`,builtIn:false,active:existing?.active||false,available:!!message.apiKey||!!existing?.hasApiKey,hasApiKey:!!message.apiKey||!!existing?.hasApiKey};
         if (existing) Object.assign(existing,saved); else previewState.providers.push(saved);
         previewReceive('providers',{items:previewState.providers});
+        setTimeout(() => previewReceive('toast',{message:existing?'供应商配置已保存':'供应商已添加',providerSaveSuccess:true}), 80);
       }
       if (message.action === 'deleteProviderProfile') {
         previewState.providers = previewState.providers.filter(item => item.id !== message.id);
@@ -149,6 +177,26 @@
         previewReceive('message',{entry:{kind:'plan',title:'计划',itemId:'p1',body:'检查供应商协议并验证输入区交互'}});
         previewReceive('message',{entry:{kind:'command',title:'命令',itemId:'c1',body:'$ rg --files src/main\n\nsrc/main/java/com/codexgui/ui/CodexToolWindowPanel.java\nsrc/main/resources/web/app.css\n\n退出码：0'}});
         previewReceive('message',{entry:{kind:'assistant',title:'Codex',itemId:'a1',body:'已经完成单列工具窗重构。\n\n## 当前结构\n\n- 历史与设置改为页内切换\n- 用户消息右侧气泡，Codex 输出保持平面 Markdown\n- 修改面板固定在输入框上方\n\n```java\nvar capture = changeService.beginCaptureAsync();\n```'}});
+        if (location.search.includes('claude-timeline')) {
+          previewReceive('message',{entry:{kind:'assistant',title:'Claude',itemId:'claude-preview:assistant:0',body:'第 1 轮：先回复文字，随后并行执行目录和时间查询。'}});
+          previewReceive('message',{entry:{kind:'command',title:'Claude 工具',itemId:'claude-preview:tool:1',body:'Bash\n\n目录查询\n\n执行状态：completed'}});
+          previewReceive('message',{entry:{kind:'command',title:'Claude 工具',itemId:'claude-preview:tool:2',body:'Bash\n\n时间查询\n\n执行状态：completed'}});
+          previewReceive('message',{entry:{kind:'assistant',title:'Claude',itemId:'claude-preview:assistant:1',body:'第 2 轮：再次回复文字，随后并行执行用户名和 PowerShell 版本查询。'}});
+          previewReceive('message',{entry:{kind:'command',title:'Claude 工具',itemId:'claude-preview:tool:3',body:'Bash\n\n用户名查询\n\n执行状态：completed'}});
+          previewReceive('message',{entry:{kind:'command',title:'Claude 工具',itemId:'claude-preview:tool:4',body:'Bash\n\nPowerShell 版本查询\n\n执行状态：completed'}});
+          previewReceive('message',{entry:{kind:'assistant',title:'Claude',itemId:'claude-preview:assistant:2',body:'测试完成：共循环两轮，每轮批量并行执行了 2 个简单指令，均成功。'}});
+        }
+        if (location.search.includes('command-stream')) {
+          previewReceive('message',{entry:{kind:'command',title:'Claude 工具',itemId:'command-stream-1',body:'Read\n\n正在读取文件...\n'}});
+          let chunk=0;
+          const commandTimer=setInterval(() => {
+            chunk++;
+            previewReceive('appendMessage',{kind:'command',title:'Claude 工具',itemId:'command-stream-1',delta:`输出片段 ${chunk}\n`});
+            if (chunk<80) return;
+            clearInterval(commandTimer);
+            previewReceive('replaceMessage',{entry:{kind:'command',title:'Claude 工具',itemId:'command-stream-1',body:'Read\n\n文件读取完成\n\n执行状态：completed'}});
+          },40);
+        }
         if (location.search.includes('stream')) {
           previewReceive('replaceMessage',{entry:{kind:'assistant',title:'Codex',itemId:'stream-1',body:'流式'}});
           previewReceive('appendMessage',{kind:'assistant',title:'Codex',itemId:'stream-1',delta:'回复'});

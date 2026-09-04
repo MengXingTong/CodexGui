@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -124,6 +125,21 @@ final class ConversationChangeTrackerTest {
 
         assertFalse(tracker.isTracked("session", path));
         assertTrue(tracker.listSummaries("session").isEmpty());
+    }
+
+    @Test
+    void sessionRefreshPublishesChangesWrittenByAnExternalProvider() throws IOException {
+        var path = write("file.txt", "before\n");
+        var tracker = new ConversationChangeTracker(root);
+        var updates = new ArrayList<ConversationChangeTracker.ChangeUpdate>();
+        tracker.trackBeforeWrite("session", path.toString());
+        tracker.addListener(updates::add);
+        write("file.txt", "after\n");
+
+        tracker.refreshSession("session");
+
+        assertEquals(1, updates.size());
+        assertEquals(path, updates.getFirst().changes().getFirst().path());
     }
 
     private Path write(String relativePath, String content) throws IOException {

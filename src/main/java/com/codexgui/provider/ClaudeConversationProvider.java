@@ -8,6 +8,7 @@ import com.google.gson.reflect.TypeToken;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ClaudeConversationProvider implements ConversationProvider {
     private static final Gson GSON = new Gson();
@@ -24,6 +25,7 @@ public final class ClaudeConversationProvider implements ConversationProvider {
     @Override
     public TurnHandle startTurn(TurnRequest request, TurnEventSink sink) {
         var handle = request.handle();
+        var assistantSegment = new AtomicInteger();
         service.startTurn(
             handle,
             request.executable(),
@@ -40,16 +42,20 @@ public final class ClaudeConversationProvider implements ConversationProvider {
                 }
 
                 @Override public void onTextDelta(String delta) {
-                    sink.accept(new TurnEvent.Delta(handle, TurnEvent.Delta.Kind.TEXT, delta));
+                    sink.accept(new TurnEvent.Delta(
+                        handle, TurnEvent.Delta.Kind.TEXT, assistantItemId(handle, assistantSegment.get()), delta));
                 }
 
                 @Override public void onThinkingDelta(String delta) {
-                    sink.accept(new TurnEvent.Delta(handle, TurnEvent.Delta.Kind.THINKING, delta));
+                    sink.accept(new TurnEvent.Delta(
+                        handle, TurnEvent.Delta.Kind.THINKING, thinkingItemId(handle), delta));
                 }
 
                 @Override public void onTool(String id, String name, com.google.gson.JsonObject input) {
                     Map<String, Object> values = GSON.fromJson(input, TOOL_INPUT_TYPE.getType());
                     sink.accept(new TurnEvent.Tool(handle, id, name, values == null ? Map.of() : values));
+                    // 后续文本进入新条目，使工具保持在调用前后两段回复之间。
+                    assistantSegment.incrementAndGet();
                 }
             }
         ).whenComplete((result, error) -> {
@@ -73,6 +79,14 @@ public final class ClaudeConversationProvider implements ConversationProvider {
     }
 
     @Override public Set<ProviderCapability> capabilities() { return Set.of(); }
+
+    static String assistantItemId(TurnHandle handle, int segment) {
+        return "claude:" + handle.turnId().value() + ":assistant:" + Math.max(0, segment);
+    }
+
+    static String thinkingItemId(TurnHandle handle) {
+        return "claude:" + handle.turnId().value() + ":thinking";
+    }
 
     private Throwable unwrap(Throwable error) {
         return error instanceof java.util.concurrent.CompletionException && error.getCause() != null

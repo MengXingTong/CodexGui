@@ -208,6 +208,23 @@ public final class ConversationChangeTracker implements Disposable {
         return target != null && baselines != null && baselines.containsKey(target);
     }
 
+    public void refreshSession(String sessionId) {
+        var key = sessionKey(sessionId);
+        List<Path> paths;
+        synchronized (this) {
+            var baselines = baselinesBySession.get(key);
+            if (baselines == null || baselines.isEmpty()) return;
+            paths = List.copyOf(baselines.keySet());
+        }
+
+        // 外部 CLI 写盘后主动刷新已登记文件，避免依赖 IDE 是否恰好收到 VFS 通知。
+        if (project == null || ApplicationManager.getApplication() == null) {
+            fireChanged(key);
+            return;
+        }
+        LocalFileSystem.getInstance().refreshNioFiles(paths, true, false, () -> fireChanged(key));
+    }
+
     private boolean trackBaseline(String sessionId, Path target, CurrentContent current) {
         var baseline = current.present()
             ? new Baseline(BaselineKind.PRESENT, copy(current.bytes()), copy(current.hash()))

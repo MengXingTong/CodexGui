@@ -15,7 +15,7 @@
 - 自定义 Claude 供应商移除认证类型选项，统一通过 `ANTHROPIC_AUTH_TOKEN` 使用 Bearer 认证；供应商协议和字体大小下拉框改用与插件一致的自绘样式，不再显示系统原生菜单。
 - 自定义供应商配置中移除没有独立意义的默认模型字段；启用前必须成功读取非空模型目录，并恢复仍有效的上次选择或选择接口首项，读取失败时保持原供应商。
 - 修复供应商保存失败后弹窗关闭并重置多个输入框的问题；现在只在后端确认成功后关闭，失败时完整保留表单内容以便修改重试。
-- 修复 Gradle Wrapper JAR 被通用 Git LFS 规则替换为指针文件、导致 GitHub Actions Wrapper 校验失败的问题；Wrapper 现在作为普通二进制文件提交。
+- 修复 Gradle Wrapper JAR 被通用 Git LFS 规则替换为指针文件、导致 GitHub Actions Wrapper 校验失败的问题；Wrapper 现在作为普通二进制文件提交，并恢复 `gradlew` 的 Unix 可执行权限供流水线直接运行。
 - GitHub Actions 升级到 `actions/checkout@v5`、`actions/setup-java@v5` 和 `gradle/actions/setup-gradle@v6`，移除旧 Node.js 20 action runtime 与 `setup-java@v4` 弃用警告。
 - 修复 Windows 与 Rider 环境下 Claude Hook 的内联 `--settings` JSON 被原生命令行破坏并误判为文件路径、导致 Claude 无法启动的问题；设置现通过逐回合临时 JSON 文件传递并在结束后清理。
 - 自定义 GPT 与 Claude 供应商的模型选择器改为读取各自接口返回的模型目录；上次选择失效时会自动切换到接口首个可用模型。

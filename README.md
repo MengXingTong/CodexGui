@@ -97,7 +97,7 @@ Windows 下插件优先使用用户级 `~/.codex` 内的本地 Codex 安装，�
 Windows PowerShell 使用 `gradlew.bat` 替代 `./gradlew`。Gradle 会下载项目锁定的 Node.js 并自动执行 TypeScript 类型检查、前端单测和 esbuild，无需预装 Node.js；构建产物为 `build/distributions/CodeDeck-<version>.zip`。
 
 仓库在每次 push 和 Pull Request 上执行 `clean check`、`buildPlugin` 与 `verifyPlugin`，协议 fixture、单元测试和插件兼容性检查全部通过后才视为验证完成。
-Gradle Wrapper JAR 直接存入 Git，不经过 Git LFS，确保 GitHub Actions 能在依赖下载前完成官方校验值验证。
+Gradle Wrapper JAR 直接存入 Git，不经过 Git LFS；`gradlew` 保留 Unix 可执行权限，确保 GitHub Actions 能直接启动 Wrapper 并在依赖下载前完成官方校验值验证。
 
 ## 已知边界
 

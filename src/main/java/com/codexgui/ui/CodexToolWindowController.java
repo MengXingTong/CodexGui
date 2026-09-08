@@ -36,7 +36,8 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.intellij.diff.DiffContentFactory;
-import com.intellij.diff.DiffManager;
+import com.intellij.diff.editor.DiffEditorTabFilesManager;
+import com.intellij.diff.editor.SimpleDiffVirtualFile;
 import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.diff.util.DiffUserDataKeys;
 import com.intellij.ide.BrowserUtil;
@@ -59,6 +60,7 @@ import com.intellij.openapi.options.ShowSettingsUtil;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.fileEditor.OpenFileDescriptor;
 import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.wm.WindowManager;
 import com.intellij.ui.jcef.JBCefBrowser;
@@ -119,6 +121,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private final Map<String, JsonArray> providerModelOptions = new ConcurrentHashMap<>();
     private final Map<String, String> activatingProviderByChannel = new ConcurrentHashMap<>();
     private final Map<String, StringBuilder> pendingCommandDeltas = new ConcurrentHashMap<>();
+    private final Map<ChangeDiffKey, SimpleDiffVirtualFile> changeDiffFiles = new LinkedHashMap<>();
     private final java.util.Set<String> scheduledCommandDeltas = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> completedCommandItems = ConcurrentHashMap.newKeySet();
     private final java.util.Set<String> confirmedSessionIds = ConcurrentHashMap.newKeySet();
@@ -167,6 +170,12 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 @Override
                 public void selectionChanged(FileEditorManagerEvent event) {
                     publishFileContext();
+                }
+
+                @Override
+                public void fileClosed(FileEditorManager source, VirtualFile file) {
+                    // 用户手动关闭 Diff 后释放复用记录，下次点击重新读取最新基线。
+                    changeDiffFiles.values().removeIf(file::equals);
                 }
             }
         );
@@ -1407,6 +1416,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var sessionId = session.id().value();
         confirmedSessionIds.remove(sessionId);
         changeService.clearSession(sessionId);
+        closeChangeDiffs(sessionId);
         approvalCoordinator.clearSession(session.id());
         // 新建会话时重置线程和输入上下文，避免旧附件或草稿带入新对话。
         session.clearConversation();
@@ -1446,6 +1456,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         // 页签关闭代表用户确认保留该会话的工作区修改，清理其待处理事务。
         confirmedSessionIds.add(sessionId);
         changeService.clearSession(sessionId);
+        closeChangeDiffs(sessionId);
     }
 
     private void publishClear(ConversationSession session) {
@@ -1987,12 +1998,17 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private void acceptAllChanges() {
         // 空列表直接结束，避免把无意义的全量扫描提交到界面线程。
         if (changeService.listSummaries(activeSessionId()).isEmpty()) return;
-        changeService.acceptAll(activeSessionId());
+        var sessionId = activeSessionId();
+        changeService.acceptAll(sessionId);
+        closeChangeDiffs(sessionId);
     }
 
     private void acceptChange(int index) {
         var change = changeAt(index);
-        if (change != null) changeService.accept(activeSessionId(), change.path());
+        if (change == null) return;
+        var sessionId = activeSessionId();
+        changeService.accept(sessionId, change.path());
+        closeChangeDiff(sessionId, change.path());
     }
 
     private void revertChange(int index) {
@@ -2000,7 +2016,9 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         if (change == null) return;
         if (Messages.showYesNoDialog(project, "撤销 Codex 对该文件的全部修改？\n\n" + change.path(), "撤销文件修改", "撤销", "取消", Messages.getWarningIcon()) != Messages.YES) return;
         try {
-            changeService.revert(activeSessionId(), change.path());
+            var sessionId = activeSessionId();
+            changeService.revert(sessionId, change.path());
+            closeChangeDiff(sessionId, change.path());
         } catch (IOException error) {
             Messages.showErrorDialog(project, error.getMessage(), "无法撤销修改");
         }
@@ -2010,7 +2028,9 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         if (changeService.listSummaries(activeSessionId()).isEmpty()) return;
         if (Messages.showYesNoDialog(project, "撤销当前回合捕获的全部文件修改？", "撤销全部修改", "全部撤销", "取消", Messages.getWarningIcon()) != Messages.YES) return;
         try {
-            changeService.revertAll(activeSessionId());
+            var sessionId = activeSessionId();
+            changeService.revertAll(sessionId);
+            closeChangeDiffs(sessionId);
         } catch (IOException error) {
             Messages.showErrorDialog(project, error.getMessage(), "部分文件无法撤销");
         }
@@ -2019,6 +2039,14 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private void openChange(int index) {
         var change = changeAt(index);
         if (change == null) return;
+        var diffKey = new ChangeDiffKey(activeSessionId(), change.path().toAbsolutePath().normalize());
+        var editorManager = FileEditorManager.getInstance(project);
+        var existingDiff = changeDiffFiles.get(diffKey);
+        // 已打开的同一 Diff 只切换焦点，避免生成内容相同的重复标签。
+        if (existingDiff != null && editorManager.isFileOpen(existingDiff)) {
+            editorManager.openFile(existingDiff, true);
+            return;
+        }
         var details = changeService.readDetails(activeSessionId(), change.path());
         if (details == null) return;
         var before = details.beforeContent() == null ? "" : new String(details.beforeContent(), StandardCharsets.UTF_8);
@@ -2041,7 +2069,24 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         );
         // 只读保护 AI 修改前快照，允许右侧真实文件文档接收编辑。
         request.putUserData(DiffUserDataKeys.FORCE_READ_ONLY_CONTENTS, new boolean[]{true, false});
-        DiffManager.getInstance().showDiff(project, request);
+        var diffFile = new SimpleDiffVirtualFile(request);
+        changeDiffFiles.put(diffKey, diffFile);
+        DiffEditorTabFilesManager.getInstance(project).showDiffFile(diffFile, true);
+    }
+
+    private void closeChangeDiff(String sessionId, Path path) {
+        var diffFile = changeDiffFiles.remove(new ChangeDiffKey(sessionId, path.toAbsolutePath().normalize()));
+        if (diffFile != null) FileEditorManager.getInstance(project).closeFile(diffFile);
+    }
+
+    private void closeChangeDiffs(String sessionId) {
+        var editorManager = FileEditorManager.getInstance(project);
+        var diffFiles = changeDiffFiles.entrySet().stream()
+            .filter(entry -> Objects.equals(entry.getKey().sessionId(), sessionId))
+            .map(Map.Entry::getValue)
+            .toList();
+        changeDiffFiles.entrySet().removeIf(entry -> Objects.equals(entry.getKey().sessionId(), sessionId));
+        diffFiles.forEach(editorManager::closeFile);
     }
 
     private void openChangeLocation(int index) {
@@ -3161,6 +3206,8 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         }
     }
 
+    private record ChangeDiffKey(String sessionId, Path path) {}
+
     private String joinStrings(JsonArray values) {
         var result = new StringBuilder();
         for (var value : values) {
@@ -3213,6 +3260,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         codexProvider.close();
         changeService.removeListener(changeListener);
         attentionService.close();
+        changeDiffFiles.clear();
     }
 
 }

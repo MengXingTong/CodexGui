@@ -29,6 +29,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
@@ -56,7 +57,7 @@ public final class ConversationChangeTracker implements Disposable {
 
     private enum BaselineKind { PRESENT, ABSENT }
 
-    private record Baseline(BaselineKind kind, byte[] bytes, byte[] hash) {
+    private record Baseline(BaselineKind kind, byte[] bytes, byte[] hash, String providerTurnKey) {
         private boolean reversible() { return kind == BaselineKind.ABSENT || bytes != null; }
     }
 
@@ -102,20 +103,34 @@ public final class ConversationChangeTracker implements Disposable {
     Path resolveWorkspacePath(String reportedPath) { return resolveReportedPath(reportedPath); }
 
     public synchronized void trackProviderDiff(String sessionId, String unifiedDiff) {
+        trackProviderDiff(sessionId, null, unifiedDiff);
+    }
+
+    public synchronized void trackProviderDiff(String sessionId, String providerTurnKey, String unifiedDiff) {
         if (unifiedDiff == null || unifiedDiff.isBlank()) return;
+        var currentContents = new LinkedHashMap<String, CurrentContent>();
         var afterContents = new LinkedHashMap<String, byte[]>();
         for (var reportedPath : UnifiedDiffParser.split(unifiedDiff).keySet()) {
             var target = resolveReportedPath(reportedPath);
             if (target == null) continue;
-            afterContents.put(reportedPath, readCurrent(target).bytes());
+            // Provider 直接写磁盘，IDE Document 可能尚未收到外部文件刷新。
+            var current = readDiskCurrent(target);
+            currentContents.put(reportedPath, current);
+            afterContents.put(reportedPath, current.bytes());
         }
         for (var fileDiff : UnifiedDiffParser.parse(unifiedDiff, afterContents)) {
             var target = resolveReportedPath(fileDiff.path());
-            if (target == null) continue;
-            var baseline = fileDiff.beforeContent() == null
-                ? new Baseline(BaselineKind.ABSENT, null, null)
-                : new Baseline(BaselineKind.PRESENT, copy(fileDiff.beforeContent()), hash(fileDiff.beforeContent()));
-            trackBaseline(sessionKey(sessionId), target, baseline);
+            var current = currentContents.get(fileDiff.path());
+            if (target == null || current == null || !matchesKind(fileDiff.kind(), current.present())) continue;
+            // 可读取文本必须匹配补丁 after 侧；过期事件留给同回合的后续累计 diff 处理。
+            if (!fileDiff.binary() && current.bytes() != null && !fileDiff.matchesCurrent()) continue;
+            var before = fileDiff.beforeContent();
+            if (!fileDiff.binary() && current.bytes() != null && fileDiff.kind() != ChangeEntry.Kind.ADDED
+                && before == null) continue;
+            var baseline = fileDiff.kind() == ChangeEntry.Kind.ADDED
+                ? new Baseline(BaselineKind.ABSENT, null, null, providerTurnKey)
+                : new Baseline(BaselineKind.PRESENT, copy(before), hash(before), providerTurnKey);
+            trackProviderBaseline(sessionKey(sessionId), target, baseline);
         }
     }
 
@@ -227,9 +242,19 @@ public final class ConversationChangeTracker implements Disposable {
 
     private boolean trackBaseline(String sessionId, Path target, CurrentContent current) {
         var baseline = current.present()
-            ? new Baseline(BaselineKind.PRESENT, copy(current.bytes()), copy(current.hash()))
-            : new Baseline(BaselineKind.ABSENT, null, null);
+            ? new Baseline(BaselineKind.PRESENT, copy(current.bytes()), copy(current.hash()), null)
+            : new Baseline(BaselineKind.ABSENT, null, null, null);
         return trackBaseline(sessionId, target, baseline);
+    }
+
+    private boolean trackProviderBaseline(String sessionId, Path target, Baseline baseline) {
+        var baselines = baselinesBySession.computeIfAbsent(sessionId, ignored -> new LinkedHashMap<>());
+        var current = baselines.get(target);
+        if (current != null && (baseline.providerTurnKey() == null
+            || !Objects.equals(current.providerTurnKey(), baseline.providerTurnKey()))) return false;
+        baselines.put(target, baseline);
+        fireChanged(sessionId);
+        return true;
     }
 
     private boolean trackBaseline(String sessionId, Path target, Baseline baseline) {
@@ -271,6 +296,10 @@ public final class ConversationChangeTracker implements Disposable {
     private CurrentContent readCurrent(Path path) {
         var documentBytes = readDocument(path);
         if (documentBytes != null) return content(documentBytes);
+        return readDiskCurrent(path);
+    }
+
+    private CurrentContent readDiskCurrent(Path path) {
         if (!Files.isRegularFile(path)) return new CurrentContent(false, null, null);
         try {
             if (Files.size(path) <= MAX_BASELINE_BYTES) return content(Files.readAllBytes(path));
@@ -380,6 +409,13 @@ public final class ConversationChangeTracker implements Disposable {
 
     private Path normalizePath(Path path) {
         return pathPolicy.normalize(path);
+    }
+
+    private boolean matchesKind(ChangeEntry.Kind kind, boolean currentPresent) {
+        // 删除补丁只能对应已不存在的文件。
+        if (kind == ChangeEntry.Kind.DELETED) return !currentPresent;
+        // 新增和修改补丁必须对应当前存在的文件。
+        return currentPresent;
     }
 
     private LineStats lineStats(String diff) {

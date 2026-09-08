@@ -5,7 +5,7 @@ export const BRIDGE_COMMAND_TYPES = [
   'history', 'openThread', 'rename', 'export', 'pickFile', 'pickImage', 'dropFiles',
   'cancelDrop', 'composerBounds', 'listProjectFiles', 'removeAttachment', 'removeFileReference',
   'removeFileReferences', 'addFileReferences', 'reorderFileReferences', 'acceptChange',
-  'revertChange', 'acceptAll', 'revertAll', 'openChange', 'compact', 'review', 'rewind',
+  'revertChange', 'acceptAll', 'revertAll', 'openChange', 'openChangeLocation', 'compact', 'review', 'rewind',
   'mcp', 'usage', 'setting', 'selectProvider', 'activateProviderProfile', 'saveProviderProfile',
   'deleteProviderProfile', 'checkProviders', 'behaviorSetting', 'browseNotificationSound',
   'testNotificationSound', 'toggleStreaming', 'toggleThinking', 'saveInstructions', 'savePrompt',
@@ -36,7 +36,7 @@ export interface BridgeEnvelope<TType extends string, TPayload extends object> {
 }
 
 type CommandPayload<T extends BridgeCommandType> =
-  T extends 'send' ? {text: string} :
+  T extends 'send' ? {text: string; referenceIds: string[]} :
   T extends 'new' ? {title?: string; skipConfirmation?: boolean} :
   T extends 'listProjectFiles' ? {query: string} :
   T extends 'answerQuestions' ? {answers: Record<string, {answers: string[]}>} :

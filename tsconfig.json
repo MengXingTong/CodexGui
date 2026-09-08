@@ -8,5 +8,5 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/main/ts/**/*.ts", "src/test/ts/**/*.ts"]
+  "include": ["src/main/ts/**/*.ts", "src/test/**/*.ts", "playwright.config.ts", "vitest.config.ts"]
 }

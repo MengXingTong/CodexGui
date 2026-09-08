@@ -4,7 +4,7 @@
 
 CodeDeck 是面向 JetBrains IDE 的 Codex / Claude Code 图形界面插件。Codex 通过 `codex app-server --stdio` 使用原生 JSON-RPC 协议，Claude Code 通过 `claude -p --output-format stream-json` 使用结构化流式输出；插件不注入第三方隐藏提示词。
 
-当前开发版本：`0.5.1`。项目尚未发布到 JetBrains Marketplace，目前只能从源码运行或自行构建插件包。
+当前开发版本：`0.5.2`。项目尚未发布到 JetBrains Marketplace，目前只能从源码运行或自行构建插件包。
 
 ## 当前能力
 
@@ -23,11 +23,11 @@ CodeDeck 是面向 JetBrains IDE 的 Codex / Claude Code 图形界面插件。Co
 - 审批模式展开菜单采用适合 JetBrains 工具窗的紧凑双行布局
 - 命令执行、文件修改审批和中断
 - 无超时的 Codex 结构化提问窗口，支持方案说明、“其它”输入和多问题导航
-- 文本、文件引用与图片输入，支持编辑器选区上下文、项目树拖拽文件引用与图片附件；输入 `@` 可稳定搜索项目文件并插入文件标签，搜索过程不会打断聊天框文字选择；文件标签按输入位置发送给 Codex，并统一传递为 `@` 加完整绝对路径，也可直接拖动排序、选择、复制或剪切；从已发送消息复制文件路径或包含文件路径的混合内容后，粘贴到其它 IDE 窗口的输入框仍会按原位置恢复文件标签
+- 文本、文件引用与图片输入，支持编辑器选区上下文、项目树拖拽文件引用与图片附件；聊天输入框由 ProseMirror 结构化文档管理，文件引用是带稳定 ID 的内联原子节点，可按一个逻辑位置跨越、选择、删除、撤销、重做和拖动排序；输入 `@` 可搜索项目文件并异步插入原位置，跨 IDE 窗口复制、剪切或粘贴混合内容时仍按原顺序恢复文件标签
 - 用户/项目 Skills 导入、启停和 Codex 自动发现；Skills 页面按路径区分个人与官方来源，默认只显示个人 Skill，并可切换查看 Codex 自带 Skill
 - 会话内命令、计划、MCP 与文件修改事件展示；任务悬浮框会汇总真实的计划和工具执行记录，命令以单行省略形式显示，并用红绿圆点标识执行结果，连续批量命令会收纳到可滚动的批量框中
 - AI 回复中的本地文件路径链接支持直接跳转到 JetBrains 编辑器对应的文件、行和列，并兼容 Windows 盘符路径
-- 修改捕获栏由 Conversation ChangeSet 驱动：只有 Provider 明确报告或 Claude 文件 Hook 预先声明的路径才会进入列表；首次触碰保存存在/缺失基线，后续用户编辑从 JetBrains Document/VFS 或磁盘实时读取，并通过批量 VFS 事件只刷新已跟踪路径
+- 修改捕获栏由 Conversation ChangeSet 驱动：只有 Provider 明确报告或 Claude 文件 Hook 预先声明的路径才会进入列表；首次触碰保存存在/缺失基线，Codex 补丁只有在 after 侧与实时文件匹配时才会建立基线，同一回合的最新累计补丁可纠正早期临时基线；后续用户编辑从 JetBrains Document/VFS 或磁盘实时读取，并通过批量 VFS 事件只刷新已跟踪路径；新增/删除行数按基线到当前内容的逐行净差异统计，多处修改不会把中间未变内容重复计入；悬浮文件项可查看项目相对路径，右键可在系统文件管理器中定位文件
 - 接受修改会清除该文件当前基线，再次被 Provider 触碰时重新建立基线；撤销会恢复首次基线，新文件会删除，超过 5 MiB 的文件仍显示变化但标记为不可撤销
 - 修改捕获按会话页签隔离；关闭页签或在当前页签开启新对话后，该会话的修改视为已确认，不再参与后续会话状态
 - 会话收藏、搜索、重命名和 Markdown 导出
@@ -51,12 +51,12 @@ CodeDeck 是面向 JetBrains IDE 的 Codex / Claude Code 图形界面插件。Co
 - Claude `Write`、`Edit` 与 `NotebookEdit` 在写入前通过仅监听 `127.0.0.1` 的 PreToolUse Hook relay 校验路径并同步保存首次基线；Hook 设置通过逐回合临时 JSON 文件传给 CLI 并在结束后清理，回合结束时主动刷新已跟踪文件并发布修改列表，不依赖 IDE 是否即时收到外部文件 VFS 通知；缺失、畸形、越界或旧 generation 请求会阻止对应文件工具
 - 输入聊天框内容超过自动高度上限时支持纵向滚动，并在输入时跟随光标保持可视
 - 中文输入法组合输入期间支持正常退格，不会误关闭输入法；修改列表点击和状态浮层交互保持稳定
-- 文件引用标签前后保留可见光标位置，输入框最前方退格不会误删标签
+- 左右方向键每次跨过一个文件标签并持续向两端移动，Shift 选择、Backspace/Delete、Home/End 和普通文本导航保持一致；输入框不再使用零宽字符或可编辑光标占位节点，文件标签高度与输入文字行高保持一致，两侧均为光标保留透明间隔，空输入框提示也不会参与光标排版
 - 输入框支持按 `Shift+Enter` 单次换行；也可在基础设置中切换为 `Ctrl+Enter` 发送、`Enter` 换行
 - 长流式回复采用增量事件传输，降低 IDE JVM 堆内存峰值
 - CC-Gui 式设置侧栏：基础设置、供应商、全局/共享提示词、Agent 身份、Skills 与 Codex MCP；各设置页面保持一致的导航宽度和完整文字标签
-- 输入区 Agent 身份标签支持直接切换身份；默认身份以中性色表示未附加身份指令，自定义身份才使用强调色；切换菜单不会触发消息输入框高亮
-- 聊天输入框、状态标签和相关悬浮菜单采用紧凑字号，减少输入区占用空间
+- 输入区 Agent 身份标签支持直接切换身份；默认身份以中性色表示未附加身份指令，自定义身份才使用强调色；切换菜单不会触发消息输入框高亮，开发预览页也会按真实 Bridge 行为回推身份状态
+- 聊天输入文字使用 `13px` 字号，状态标签和相关悬浮菜单继续保持紧凑布局
 - 修改捕获列表的单文件接受与撤销按钮使用统一的无原生灰底样式，悬停时提供清晰反馈
 - 设置在异步任务启动前固化为不可变快照，受限选项使用枚举并通过一次性 schema migration 兼容旧配置；项目文件搜索使用 JetBrains `ProjectFileIndex`，所有工作区路径统一经过同一边界策略校验
 
@@ -94,9 +94,9 @@ Windows 下插件优先使用用户级 `~/.codex` 内的本地 Codex 安装，�
 ./gradlew clean check buildPlugin verifyPlugin
 ```
 
-Windows PowerShell 使用 `gradlew.bat` 替代 `./gradlew`。Gradle 会下载项目锁定的 Node.js 并自动执行 TypeScript 类型检查、前端单测和 esbuild，无需预装 Node.js；构建产物为 `build/distributions/CodeDeck-<version>.zip`。
+Windows PowerShell 使用 `gradlew.bat` 替代 `./gradlew`。Gradle 会下载项目锁定的 Node.js，并自动执行 TypeScript 类型检查、Vitest、Playwright Chromium 回归和 esbuild，无需预装 Node.js；Playwright 首次运行会下载测试用 Chromium，构建产物为 `build/distributions/CodeDeck-<version>.zip`。
 
-仓库在每次 push 和 Pull Request 上执行 `clean check`、`buildPlugin` 与 `verifyPlugin`，协议 fixture、单元测试和插件兼容性检查全部通过后才视为验证完成。
+仓库在每次 push 和 Pull Request 上先安装 Playwright Chromium，再执行 `clean check`、`buildPlugin` 与 `verifyPlugin`；协议 fixture、单元测试、真实浏览器输入框回归和插件兼容性检查全部通过后才视为验证完成。
 Gradle Wrapper JAR 直接存入 Git，不经过 Git LFS；`gradlew` 保留 Unix 可执行权限，确保 GitHub Actions 能直接启动 Wrapper 并在依赖下载前完成官方校验值验证。
 
 ## 已知边界

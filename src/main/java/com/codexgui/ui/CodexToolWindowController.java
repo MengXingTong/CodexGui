@@ -40,6 +40,7 @@ import com.intellij.diff.DiffManager;
 import com.intellij.diff.requests.SimpleDiffRequest;
 import com.intellij.diff.util.DiffUserDataKeys;
 import com.intellij.ide.BrowserUtil;
+import com.intellij.ide.actions.RevealFileAction;
 import com.intellij.ide.dnd.DnDEvent;
 import com.intellij.ide.dnd.DnDSupport;
 import com.intellij.ide.dnd.FileCopyPasteUtil;
@@ -76,6 +77,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -200,7 +202,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                     asyncError("重新连接 Codex CLI 失败", error);
                     return null;
                 });
-                case SEND -> sendInput(string(request, "text", ""));
+                case SEND -> sendInput(string(request, "text", ""), request.has("referenceIds") ? array(request, "referenceIds") : null);
                 case STOP -> interruptCurrentTurn();
                 case NEW -> newConversation(
                     string(request, "title", ""),
@@ -234,6 +236,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 case ACCEPT_ALL -> acceptAllChanges();
                 case REVERT_ALL -> revertAllChanges();
                 case OPEN_CHANGE -> openChange(integer(request, "index"));
+                case OPEN_CHANGE_LOCATION -> openChangeLocation(integer(request, "index"));
                 case COMPACT -> compactCurrentThread();
                 case REVIEW -> reviewCurrentChanges();
                 case REWIND -> rollbackLastTurn();
@@ -376,8 +379,14 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     }
 
     private void sendInput(String text) {
+        sendInput(text, null);
+    }
+
+    private void sendInput(String text, JsonArray referenceIds) {
         var session = activeSession();
         text = text.trim();
+        // 新版编辑器随发送命令提交引用顺序，旧版命令继续使用当前会话顺序。
+        if (referenceIds != null && !applySendReferenceOrder(session, text, referenceIds)) return;
         if (text.isBlank() && session.attachments().isEmpty() && session.fileReferences().isEmpty()) return;
         if (session.busy()) {
             enqueueInput(text);
@@ -410,12 +419,40 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         sendInput(session, text);
     }
 
+    private boolean applySendReferenceOrder(ConversationSession session, String text, JsonArray ids) {
+        var ordered = orderedSendReferences(session.fileReferences(), text, ids);
+        if (ordered == null) {
+            toast("文件引用状态尚未同步，请稍后重试");
+            return false;
+        }
+        session.fileReferences().forEach(session::rememberFileReference);
+        session.fileReferences().clear();
+        session.fileReferences().addAll(ordered);
+        return true;
+    }
+
+    static List<FileReference> orderedSendReferences(List<FileReference> references, String text, JsonArray ids) {
+        var markerCount = text.chars().filter(character -> character == '\uFFFC').count();
+        if (markerCount != ids.size() || ids.size() != references.size()) return null;
+        var remaining = new ArrayList<>(references);
+        var ordered = new ArrayList<FileReference>();
+        for (var value : ids) {
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return null;
+            var id = value.getAsString();
+            var match = remaining.stream().filter(reference -> reference.id().equals(id)).findFirst().orElse(null);
+            if (match == null) return null;
+            ordered.add(match);
+            remaining.remove(match);
+        }
+        return List.copyOf(ordered);
+    }
+
     private void sendInput(ConversationSession session, String text) {
         if (session.attachments().isEmpty() && session.fileReferences().isEmpty() && handleNativeCommand(text)) return;
 
         var input = prepareInput(session, text);
         session.attachments().clear();
-        session.fileReferences().clear();
+        session.clearFileReferences();
         publishAttachments(session);
         publishFileReferences(session);
         dispatchInput(session, input, true);
@@ -450,7 +487,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         ));
         session.pendingUserMessageCount(session.pendingUserMessageCount() + 1);
         session.attachments().clear();
-        session.fileReferences().clear();
+        session.clearFileReferences();
         publishAttachments(session);
         publishFileReferences(session);
         publishQueueState(session);
@@ -526,7 +563,8 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             return;
         }
         if (event instanceof TurnEvent.Change change) {
-            changeService.trackProviderDiff(session.id().value(), change.unifiedDiff());
+            var providerTurnKey = turnHandle.turnId().value() + ':' + turnHandle.generation();
+            changeService.trackProviderDiff(session.id().value(), providerTurnKey, change.unifiedDiff());
             return;
         }
         if (event instanceof TurnEvent.Usage usage) {
@@ -1590,7 +1628,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             }
             // 普通文件或目录作为引用标签插入，重复路径保持幂等。
             if (session.fileReferences().stream().anyMatch(item -> item.path().equals(normalized))) continue;
-            session.fileReferences().add(FileReference.fromPath(normalized));
+            session.addFileReference(FileReference.fromPath(normalized));
             addedReferences++;
         }
         // 拖拽结果已经通过输入框标签或附件列表展示，不再弹出遮挡输入框的结果提示。
@@ -1825,6 +1863,10 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private void removeFileReference(String id) {
         var session = activeSession();
         if (id.isBlank()) return;
+        session.fileReferences().stream()
+            .filter(reference -> reference.id().equals(id))
+            .findFirst()
+            .ifPresent(session::rememberFileReference);
         if (!session.fileReferences().removeIf(reference -> reference.id().equals(id))) return;
         publishFileReferences(session);
     }
@@ -1835,7 +1877,12 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         if (ids == null || ids.isEmpty()) return;
         var removed = false;
         for (var value : ids) {
-            removed |= session.fileReferences().removeIf(reference -> reference.id().equals(value.getAsString()));
+            var id = value.getAsString();
+            session.fileReferences().stream()
+                .filter(reference -> reference.id().equals(id))
+                .findFirst()
+                .ifPresent(session::rememberFileReference);
+            removed |= session.fileReferences().removeIf(reference -> reference.id().equals(id));
         }
         if (removed) publishFileReferences(session);
     }
@@ -1848,7 +1895,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         for (var value : paths) {
             var path = droppedPath(value.getAsString());
             if (path == null || (!Files.isRegularFile(path) && !Files.isDirectory(path))) continue;
-            session.fileReferences().add(FileReference.fromPath(path.toAbsolutePath().normalize()));
+            session.addFileReference(FileReference.fromPath(path.toAbsolutePath().normalize()));
             added++;
         }
         if (added > 0) publishFileReferences(session);
@@ -1857,23 +1904,22 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
     private void reorderFileReferences(JsonObject request) {
         var session = activeSession();
         var ids = request.getAsJsonArray("ids");
-        if (ids == null || ids.size() != session.fileReferences().size()) return;
-        var remaining = new ArrayList<>(session.fileReferences());
+        if (ids == null) return;
         var ordered = new ArrayList<FileReference>();
+        var seen = new HashSet<String>();
         for (var value : ids) {
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return;
             var id = value.getAsString();
-            var index = -1;
-            for (var i = 0; i < remaining.size(); i++) {
-                if (remaining.get(i).id().equals(id)) {
-                    index = i;
-                    break;
-                }
-            }
-            if (index < 0) return;
-            ordered.add(remaining.remove(index));
+            if (!seen.add(id)) return;
+            var reference = session.knownFileReference(id);
+            if (reference == null) return;
+            ordered.add(reference);
         }
+        // 草稿生命周期内保留已删除引用的元数据，使编辑器撤销可以恢复同一个稳定 ID。
+        session.fileReferences().forEach(session::rememberFileReference);
         session.fileReferences().clear();
         session.fileReferences().addAll(ordered);
+        publishFileReferences(session);
     }
 
     private JsonArray attachmentsJson(ConversationSession session) {
@@ -1996,6 +2042,21 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         // 只读保护 AI 修改前快照，允许右侧真实文件文档接收编辑。
         request.putUserData(DiffUserDataKeys.FORCE_READ_ONLY_CONTENTS, new boolean[]{true, false});
         DiffManager.getInstance().showDiff(project, request);
+    }
+
+    private void openChangeLocation(int index) {
+        var change = changeAt(index);
+        if (change == null) return;
+        // 已删除文件无法被系统选中，此时退回到仍然存在的父目录。
+        var fileExists = Files.exists(change.path());
+        var target = fileExists ? change.path() : change.path().getParent();
+        if (target == null || !Files.exists(target)) {
+            toast("无法打开文件所在目录");
+            return;
+        }
+        // 现存文件交给系统文件管理器选中，删除记录则直接打开原父目录。
+        if (fileExists) RevealFileAction.openFile(target);
+        else RevealFileAction.openDirectory(target);
     }
 
     private void searchConversation() {

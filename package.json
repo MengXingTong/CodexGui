@@ -1,19 +1,31 @@
 {
   "name": "codedeck-frontend",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "scripts": {
     "build": "esbuild src/main/ts/app.ts --bundle --format=iife --platform=browser --target=chrome120 --outfile=build/generated-resources/web/app.js",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:browser": "npm run build && npm run test:browser:run",
+    "test:browser:run": "playwright install chromium && playwright test"
   },
   "dependencies": {
     "dompurify": "3.4.14",
-    "marked": "15.0.12"
+    "marked": "15.0.12",
+    "prosemirror-commands": "^1.7.2",
+    "prosemirror-dropcursor": "^1.8.3",
+    "prosemirror-history": "^1.5.0",
+    "prosemirror-keymap": "^1.2.3",
+    "prosemirror-model": "^1.25.11",
+    "prosemirror-state": "^1.4.4",
+    "prosemirror-view": "^1.42.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/dompurify": "3.0.5",
+    "@types/node": "^22.20.1",
     "esbuild": "0.25.5",
+    "jsdom": "^26.1.0",
     "typescript": "5.8.3",
     "vitest": "3.2.7"
   }

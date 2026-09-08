@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="../src/main/resources/web/app.css?v=10">
+  <link rel="stylesheet" href="../src/main/resources/web/app.css?v=11">
 </head>
 <body>
   <div id="app"></div>
@@ -23,6 +23,7 @@
       ]
     });
     let previewReferenceSequence = 3;
+    const previewReferenceCatalog = new Map(previewState.fileReferences.map(reference => [reference.id, reference]));
     const previewSkills = [
       {name:'browser:control-in-app-browser',path:'C:\\Users\\demo\\.codex\\plugins\\cache\\openai-bundled\\browser\\26.825.31414\\skills\\control-in-app-browser\\SKILL.md',description:'控制浏览器并检查本地 Web 界面。',enabled:true,scope:'user',interface:{displayName:'Browser',shortDescription:'浏览器导航、截图与交互验证',brandColor:'#4a90e2',defaultPrompt:'检查当前页面的布局、可访问性和交互状态。'},dependencies:{tools:[{type:'mcp',value:'browser',description:'需要浏览器控制服务'}]}},
       {name:'pending-changes-diff:pending-changes-diff',path:'C:\\Users\\demo\\.codex\\plugins\\cache\\personal\\pending-changes-diff\\0.1.0\\skills\\pending-changes-diff\\SKILL.md',description:'管理当前工作区的待处理修改。',enabled:true,scope:'user',interface:{displayName:'Pending Changes Diff',shortDescription:'管理待处理修改'},dependencies:{tools:[]}},
@@ -102,7 +103,9 @@
       }
       if (message.action === 'setting') previewState[message.key] = message.value;
       if (message.action === 'behaviorSetting') previewState[message.key] = message.value;
+      if (message.action === 'selectAgent') previewState.activeAgentId = previewState.agents.some(agent => agent.id === message.id) ? message.id : '';
       if (['toggleThinking','toggleStreaming','selectProvider','setting','behaviorSetting'].includes(message.action)) previewReceive('bootstrap',{state:previewState});
+      if (message.action === 'selectAgent') previewReceive('bootstrap',{state:previewState});
       if (message.action === 'checkProviders') previewReceive('providers',{items:previewState.providers});
       if (['loadSkills','reloadSkills'].includes(message.action)) previewReceive('skills',{items:previewSkills,errors:[{path:'E:\\Projects\\demo\\.codex\\skills\\broken\\SKILL.md',message:'frontmatter 缺少 name 字段'}]});
       if (['loadMcp','reloadMcp'].includes(message.action)) previewReceive('mcpServers',{items:previewMcp});
@@ -116,18 +119,36 @@
         previewReceive('fileReferences',{items:previewState.fileReferences});
       }
       if (message.action === 'addFileReferences') {
-        message.paths.forEach(path => {
-          const existing = previewState.fileReferences.find(item => item.path === path);
-          if (existing) previewState.fileReferences.push({...existing,id:`ref-${++previewReferenceSequence}`});
-        });
-        previewReceive('fileReferences',{items:previewState.fileReferences});
+        setTimeout(() => {
+          message.paths.forEach(path => {
+            const existing = [...previewReferenceCatalog.values()].find(item => item.path === path);
+            const reference = existing
+              ? {...existing,id:`ref-${++previewReferenceSequence}`}
+              : {id:`ref-${++previewReferenceSequence}`,name:path.split(/[\\/]/).pop()||path,path,directory:false};
+            previewReferenceCatalog.set(reference.id,reference);
+            previewState.fileReferences.push(reference);
+          });
+          previewReceive('fileReferences',{items:previewState.fileReferences});
+        },120);
       }
       if (message.action === 'reorderFileReferences') {
-        const remaining = [...previewState.fileReferences];
-        previewState.fileReferences = message.ids.map(id => {
-          const index = remaining.findIndex(item => item.id === id);
-          return index < 0 ? null : remaining.splice(index, 1)[0];
-        }).filter(Boolean);
+        const seen = new Set();
+        const ordered = message.ids.map(id => {
+          if (seen.has(id)) return null;
+          seen.add(id);
+          return previewReferenceCatalog.get(id)||null;
+        });
+        if (ordered.every(Boolean)) {
+          previewState.fileReferences = ordered;
+          previewReceive('fileReferences',{items:previewState.fileReferences});
+        }
+      }
+      if (message.action === 'dropFiles') {
+        previewReceive('nativeDrag',{active:false});
+        const reference = {id:`ref-${++previewReferenceSequence}`,name:'Dropped.cpp',path:'E:\\Projects\\BoundaryDreamland\\Dropped.cpp',directory:false};
+        previewReferenceCatalog.set(reference.id,reference);
+        previewState.fileReferences.push(reference);
+        setTimeout(() => previewReceive('fileReferences',{items:previewState.fileReferences}),35);
       }
       if (message.action === 'listProjectFiles') {
         const query = String(message.query || '').toLowerCase();

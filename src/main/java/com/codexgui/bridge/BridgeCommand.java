@@ -55,6 +55,7 @@ public sealed interface BridgeCommand permits BridgeCommand.V1 {
         ACCEPT_ALL("acceptAll"),
         REVERT_ALL("revertAll"),
         OPEN_CHANGE("openChange"),
+        OPEN_CHANGE_LOCATION("openChangeLocation"),
         COMPACT("compact"),
         REVIEW("review"),
         REWIND("rewind"),

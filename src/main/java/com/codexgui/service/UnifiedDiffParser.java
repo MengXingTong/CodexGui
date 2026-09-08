@@ -43,8 +43,11 @@ final class UnifiedDiffParser {
             var fileDiff = entry.getValue();
             var kind = kindOf(fileDiff);
             var after = kind == ChangeEntry.Kind.DELETED ? new byte[0] : afterContents.get(path);
-            var before = kind == ChangeEntry.Kind.ADDED || isBinary(fileDiff) ? null : reconstructBefore(fileDiff, after);
-            result.add(new ParsedFileDiff(path, kind, before, fileDiff));
+            var binary = isBinary(fileDiff);
+            var reconstructed = binary ? null : reconstructBefore(fileDiff, after);
+            var matchesCurrent = binary || reconstructed != null;
+            var before = kind == ChangeEntry.Kind.ADDED ? null : reconstructed;
+            result.add(new ParsedFileDiff(path, kind, before, fileDiff, matchesCurrent, binary));
         }
         return result;
     }
@@ -67,6 +70,7 @@ final class UnifiedDiffParser {
         var afterText = decode(afterContent);
         if (afterText == null) return null;
         var afterLines = lines(afterText);
+        var lineSeparator = lineSeparator(afterText);
         var beforeLines = new ArrayList<String>();
         var afterIndex = 0;
         var hasHunk = false;
@@ -77,11 +81,15 @@ final class UnifiedDiffParser {
             if (!matcher.matches()) continue;
             hasHunk = true;
             var newStart = Integer.parseInt(matcher.group(3));
-            var targetAfterIndex = Math.max(0, newStart - 1);
+            var expectedBeforeLines = lineCount(matcher.group(2));
+            var expectedAfterLines = lineCount(matcher.group(4));
+            var targetAfterIndex = expectedAfterLines == 0 ? newStart : Math.max(0, newStart - 1);
             if (targetAfterIndex < afterIndex || targetAfterIndex > afterLines.size()) return null;
             while (afterIndex < targetAfterIndex) beforeLines.add(afterLines.get(afterIndex++));
 
             String previousLine = null;
+            var consumedBeforeLines = 0;
+            var consumedAfterLines = 0;
             for (index++; index < diffLines.length; index++) {
                 var line = diffLines[index];
                 if (HUNK_HEADER.matcher(line).matches() || line.startsWith("diff --git a/")) {
@@ -100,14 +108,20 @@ final class UnifiedDiffParser {
                 var marker = line.charAt(0);
                 switch (marker) {
                     case ' ' -> {
-                        if (afterIndex >= afterLines.size()) return null;
+                        if (!matches(afterLines, afterIndex, line.substring(1))) return null;
                         beforeLines.add(line.substring(1));
                         afterIndex++;
+                        consumedBeforeLines++;
+                        consumedAfterLines++;
                     }
-                    case '-' -> beforeLines.add(line.substring(1));
+                    case '-' -> {
+                        beforeLines.add(line.substring(1));
+                        consumedBeforeLines++;
+                    }
                     case '+' -> {
-                        if (afterIndex >= afterLines.size()) return null;
+                        if (!matches(afterLines, afterIndex, line.substring(1))) return null;
                         afterIndex++;
+                        consumedAfterLines++;
                     }
                     default -> {
                         return null;
@@ -115,14 +129,23 @@ final class UnifiedDiffParser {
                 }
                 previousLine = line;
             }
+            if (consumedBeforeLines != expectedBeforeLines || consumedAfterLines != expectedAfterLines) return null;
         }
         if (!hasHunk || afterIndex > afterLines.size()) return null;
         while (afterIndex < afterLines.size()) beforeLines.add(afterLines.get(afterIndex++));
         if (beforeLines.isEmpty()) return new byte[0];
 
-        var beforeText = String.join("\n", beforeLines);
-        if (!beforeNoNewline) beforeText += "\n";
+        var beforeText = String.join(lineSeparator, beforeLines);
+        if (!beforeNoNewline) beforeText += lineSeparator;
         return beforeText.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static int lineCount(String count) {
+        return count == null ? 1 : Integer.parseInt(count);
+    }
+
+    private static boolean matches(List<String> lines, int index, String expected) {
+        return index < lines.size() && lines.get(index).equals(expected);
     }
 
     private static String decode(byte[] content) {
@@ -138,11 +161,25 @@ final class UnifiedDiffParser {
     }
 
     private static List<String> lines(String text) {
-        if (text.isEmpty()) return List.of();
-        var result = new ArrayList<>(List.of(text.split("\\n", -1)));
-        if (text.endsWith("\n")) result.remove(result.size() - 1);
+        var normalized = text.replace("\r\n", "\n").replace('\r', '\n');
+        if (normalized.isEmpty()) return List.of();
+        var result = new ArrayList<>(List.of(normalized.split("\\n", -1)));
+        if (normalized.endsWith("\n")) result.remove(result.size() - 1);
         return result;
     }
 
-    record ParsedFileDiff(String path, ChangeEntry.Kind kind, byte[] beforeContent, String unifiedDiff) {}
+    private static String lineSeparator(String text) {
+        if (text.contains("\r\n")) return "\r\n";
+        if (text.indexOf('\r') >= 0) return "\r";
+        return "\n";
+    }
+
+    record ParsedFileDiff(
+        String path,
+        ChangeEntry.Kind kind,
+        byte[] beforeContent,
+        String unifiedDiff,
+        boolean matchesCurrent,
+        boolean binary
+    ) {}
 }

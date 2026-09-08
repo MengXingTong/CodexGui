@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.codexgui"
-version = "0.5.1"
+version = "0.5.2"
 
 repositories {
     mavenCentral()
@@ -51,14 +51,14 @@ val frontendTypecheck by tasks.registering(NpmTask::class) {
     dependsOn(tasks.npmInstall)
     npmCommand.set(listOf("run"))
     args.set(listOf("typecheck"))
-    inputs.files(fileTree("src/main/ts"), fileTree("src/test/ts"), "tsconfig.json")
+    inputs.files(fileTree("src/main/ts"), fileTree("src/test"), "tsconfig.json", "playwright.config.ts", "vitest.config.ts")
 }
 
 val frontendTest by tasks.registering(NpmTask::class) {
     dependsOn(tasks.npmInstall)
     npmCommand.set(listOf("run"))
     args.set(listOf("test"))
-    inputs.files(fileTree("src/main/ts"), fileTree("src/test/ts"), "package.json", "package-lock.json")
+    inputs.files(fileTree("src/main/ts"), fileTree("src/test/ts"), "vitest.config.ts", "package.json", "package-lock.json")
 }
 
 val frontendBundle by tasks.registering(NpmTask::class) {
@@ -67,6 +67,21 @@ val frontendBundle by tasks.registering(NpmTask::class) {
     args.set(listOf("build"))
     inputs.files(fileTree("src/main/ts"), "package.json", "package-lock.json")
     outputs.file(layout.buildDirectory.file("generated-resources/web/app.js"))
+}
+
+val frontendBrowserTest by tasks.registering(NpmTask::class) {
+    dependsOn(tasks.npmInstall, frontendBundle)
+    npmCommand.set(listOf("run"))
+    args.set(listOf("test:browser:run"))
+    inputs.files(
+        fileTree("src/main/ts"),
+        fileTree("src/test/browser"),
+        "tools/ui-preview.html",
+        "tools/serve-preview.mjs",
+        "playwright.config.ts",
+        "package.json",
+        "package-lock.json"
+    )
 }
 
 intellijPlatform {
@@ -109,7 +124,7 @@ tasks {
     }
 
     check {
-        dependsOn(frontendTypecheck, frontendTest, frontendBundle)
+        dependsOn(frontendTypecheck, frontendTest, frontendBrowserTest, frontendBundle)
     }
 
     test {

@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 final class UnifiedDiffParserTest {
@@ -64,6 +65,55 @@ final class UnifiedDiffParserTest {
     }
 
     @Test
+    void rejectsDiffWhoseAfterSideDoesNotMatchCurrentContent() {
+        var parsed = UnifiedDiffParser.parse(textDiff("before", "intermediate"), Map.of(
+            "file.txt", "latest\n".getBytes(StandardCharsets.UTF_8)
+        ));
+
+        assertFalse(parsed.getFirst().matchesCurrent());
+    }
+
+    @Test
+    void reconstructsDeletionAtItsZeroLengthAfterCoordinate() {
+        var diff = """
+            diff --git a/file.txt b/file.txt
+            --- a/file.txt
+            +++ b/file.txt
+            @@ -2,1 +1,0 @@
+            -removed
+            """;
+
+        var parsed = UnifiedDiffParser.parse(diff, Map.of(
+            "file.txt", "first\nlast\n".getBytes(StandardCharsets.UTF_8)
+        ));
+
+        assertTrue(parsed.getFirst().matchesCurrent());
+        assertEquals("first\nremoved\nlast\n",
+            new String(parsed.getFirst().beforeContent(), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void validatesLfPatchAgainstCrLfContentAndPreservesLineSeparators() {
+        var diff = """
+            diff --git a/file.txt b/file.txt
+            --- a/file.txt
+            +++ b/file.txt
+            @@ -1,2 +1,2 @@
+             first
+            -old
+            +new
+            """;
+
+        var parsed = UnifiedDiffParser.parse(diff, Map.of(
+            "file.txt", "first\r\nnew\r\n".getBytes(StandardCharsets.UTF_8)
+        ));
+
+        assertTrue(parsed.getFirst().matchesCurrent());
+        assertEquals("first\r\nold\r\n",
+            new String(parsed.getFirst().beforeContent(), StandardCharsets.UTF_8));
+    }
+
+    @Test
     void marksBinaryDiffAsNotReversible() {
         var diff = """
             diff --git a/texture.uasset b/texture.uasset
@@ -99,5 +149,16 @@ final class UnifiedDiffParserTest {
         assertEquals(ChangeEntry.Kind.ADDED, parsed.get(0).kind());
         assertEquals(ChangeEntry.Kind.DELETED, parsed.get(1).kind());
         assertEquals("old\n", new String(parsed.get(1).beforeContent(), StandardCharsets.UTF_8));
+    }
+
+    private static String textDiff(String before, String after) {
+        return """
+            diff --git a/file.txt b/file.txt
+            --- a/file.txt
+            +++ b/file.txt
+            @@ -1 +1 @@
+            -%s
+            +%s
+            """.formatted(before, after);
     }
 }

@@ -67,6 +67,12 @@ final class BridgeProtocolCodecTest {
         assertProtocolError("missing_identity", """
             {"v":1,"type":"send","requestId":"3","sessionId":"s","generation":0,"payload":{}}
             """);
+        assertProtocolError("invalid_payload", """
+            {"v":1,"type":"send","requestId":"4","sessionId":"s","turnId":"","generation":0,"payload":{"text":"hello"}}
+            """);
+        assertProtocolError("invalid_payload", """
+            {"v":1,"type":"send","requestId":"5","sessionId":"s","turnId":"","generation":0,"payload":{"text":"hello","referenceIds":[1]}}
+            """);
         assertProtocolError("malformed_json", "not-json");
     }
 

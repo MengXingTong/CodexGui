@@ -1,6 +1,9 @@
 package com.codexgui.service;
 
 import com.codexgui.model.ChangeEntry;
+import com.intellij.diff.comparison.CancellationChecker;
+import com.intellij.diff.comparison.DiffTooBigException;
+import com.intellij.diff.comparison.iterables.DiffIterableUtil;
 
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
@@ -45,6 +48,24 @@ final class UnifiedDiffBuilder {
     private static void appendTextHunk(StringBuilder diff, String beforeText, String afterText) {
         var before = textLines(beforeText);
         var after = textLines(afterText);
+        try {
+            var changes = DiffIterableUtil.diff(before.lines(), after.lines(), CancellationChecker.EMPTY);
+            var hasChanges = false;
+            for (var range : changes.iterateChanges()) {
+                hasChanges = true;
+                appendTextHunk(diff, before, after, range.start1, range.end1, range.start2, range.end2);
+            }
+
+            // 仅换行符状态变化时，逐行比较没有变更块，需要显式标记最后一行。
+            if (!hasChanges && before.endsWithNewline() != after.endsWithNewline() && !before.lines().isEmpty()) {
+                var lastLine = before.lines().size() - 1;
+                appendTextHunk(diff, before, after, lastLine, lastLine + 1, lastLine, lastLine + 1);
+            }
+            return;
+        } catch (DiffTooBigException ignored) {
+            // 超出 IDE 差异计算上限时退回首尾裁剪，确保仍能展示并撤销修改。
+        }
+
         var prefix = 0;
         while (prefix < before.lines().size() && prefix < after.lines().size()
             && before.lines().get(prefix).equals(after.lines().get(prefix))) prefix++;
@@ -60,16 +81,28 @@ final class UnifiedDiffBuilder {
         }
         var beforeEnd = before.lines().size() - suffix;
         var afterEnd = after.lines().size() - suffix;
-        var beforeCount = beforeEnd - prefix;
-        var afterCount = afterEnd - prefix;
-        var beforeStart = beforeCount == 0 ? prefix : prefix + 1;
-        var afterStart = afterCount == 0 ? prefix : prefix + 1;
+        appendTextHunk(diff, before, after, prefix, beforeEnd, prefix, afterEnd);
+    }
+
+    private static void appendTextHunk(
+        StringBuilder diff,
+        TextLines before,
+        TextLines after,
+        int beforeStartIndex,
+        int beforeEndIndex,
+        int afterStartIndex,
+        int afterEndIndex
+    ) {
+        var beforeCount = beforeEndIndex - beforeStartIndex;
+        var afterCount = afterEndIndex - afterStartIndex;
+        var beforeStart = beforeCount == 0 ? beforeStartIndex : beforeStartIndex + 1;
+        var afterStart = afterCount == 0 ? afterStartIndex : afterStartIndex + 1;
         diff.append("@@ -").append(beforeStart).append(',').append(beforeCount)
             .append(" +").append(afterStart).append(',').append(afterCount).append(" @@\n");
-        for (var index = prefix; index < beforeEnd; index++) {
+        for (var index = beforeStartIndex; index < beforeEndIndex; index++) {
             appendDiffLine(diff, '-', before.lines().get(index), before.endsWithNewline(), index, before.lines().size());
         }
-        for (var index = prefix; index < afterEnd; index++) {
+        for (var index = afterStartIndex; index < afterEndIndex; index++) {
             appendDiffLine(diff, '+', after.lines().get(index), after.endsWithNewline(), index, after.lines().size());
         }
     }

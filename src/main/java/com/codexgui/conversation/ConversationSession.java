@@ -6,7 +6,9 @@ import com.codexgui.model.FileReference;
 import com.codexgui.settings.CodexSettingsState;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public final class ConversationSession {
@@ -26,6 +28,7 @@ public final class ConversationSession {
     private long usageMaxTokens;
     private final List<Attachment> attachments = new ArrayList<>();
     private final List<FileReference> fileReferences = new ArrayList<>();
+    private final Map<String, FileReference> knownFileReferences = new LinkedHashMap<>();
     private final List<ConversationEntry> transcript = new ArrayList<>();
     private final List<QueuedInput> queuedInputs = new ArrayList<>();
 
@@ -58,6 +61,19 @@ public final class ConversationSession {
     public void usageMaxTokens(long value) { usageMaxTokens = value; }
     public List<Attachment> attachments() { return attachments; }
     public List<FileReference> fileReferences() { return fileReferences; }
+    public void addFileReference(FileReference reference) {
+        knownFileReferences.put(reference.id(), reference);
+        fileReferences.add(reference);
+    }
+    public void rememberFileReference(FileReference reference) { knownFileReferences.put(reference.id(), reference); }
+    public FileReference knownFileReference(String id) {
+        var active = fileReferences.stream().filter(reference -> reference.id().equals(id)).findFirst().orElse(null);
+        return active == null ? knownFileReferences.get(id) : active;
+    }
+    public void clearFileReferences() {
+        fileReferences.clear();
+        knownFileReferences.clear();
+    }
     public List<ConversationEntry> transcript() { return transcript; }
     public List<QueuedInput> queuedInputs() { return queuedInputs; }
 
@@ -106,7 +122,7 @@ public final class ConversationSession {
         usageUsedTokens = 0;
         usageMaxTokens = 0;
         attachments.clear();
-        fileReferences.clear();
+        clearFileReferences();
         transcript.clear();
         queuedInputs.clear();
     }

@@ -12,7 +12,7 @@
       "history", "openThread", "rename", "export", "pickFile", "pickImage", "dropFiles",
       "cancelDrop", "composerBounds", "listProjectFiles", "removeAttachment", "removeFileReference",
       "removeFileReferences", "addFileReferences", "reorderFileReferences", "acceptChange",
-      "revertChange", "acceptAll", "revertAll", "openChange", "compact", "review", "rewind",
+      "revertChange", "acceptAll", "revertAll", "openChange", "openChangeLocation", "compact", "review", "rewind",
       "mcp", "usage", "setting", "selectProvider", "activateProviderProfile", "saveProviderProfile",
       "deleteProviderProfile", "checkProviders", "behaviorSetting", "browseNotificationSound",
       "testNotificationSound", "toggleStreaming", "toggleThinking", "saveInstructions", "savePrompt",
@@ -31,12 +31,22 @@
     "generation": {"type": "integer", "minimum": 0},
     "payload": {"type": "object"}
   },
+  "allOf": [{
+    "if": {"properties": {"type": {"const": "send"}}},
+    "then": {"properties": {"payload": {
+      "required": ["text", "referenceIds"],
+      "properties": {
+        "text": {"type": "string"},
+        "referenceIds": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      }
+    }}}
+  }],
   "x-commandTypes": [
     "ready", "reconnect", "send", "stop", "new", "closeSession", "activateSession",
     "history", "openThread", "rename", "export", "pickFile", "pickImage", "dropFiles",
     "cancelDrop", "composerBounds", "listProjectFiles", "removeAttachment", "removeFileReference",
     "removeFileReferences", "addFileReferences", "reorderFileReferences", "acceptChange",
-    "revertChange", "acceptAll", "revertAll", "openChange", "compact", "review", "rewind",
+    "revertChange", "acceptAll", "revertAll", "openChange", "openChangeLocation", "compact", "review", "rewind",
     "mcp", "usage", "setting", "selectProvider", "activateProviderProfile", "saveProviderProfile",
     "deleteProviderProfile", "checkProviders", "behaviorSetting", "browseNotificationSound",
     "testNotificationSound", "toggleStreaming", "toggleThinking", "saveInstructions", "savePrompt",

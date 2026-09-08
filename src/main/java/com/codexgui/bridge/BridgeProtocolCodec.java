@@ -62,6 +62,10 @@ public final class BridgeProtocolCodec {
 
         var type = BridgeCommand.Type.fromWireName(envelope.get("type").getAsString());
         if (type == null) return rejected("unknown_type", "未知 Bridge command 类型", envelope);
+        var payload = envelope.getAsJsonObject("payload");
+        if (type == BridgeCommand.Type.SEND && !validSendPayload(payload)) {
+            return rejected("invalid_payload", "send payload 必须包含 text 和 referenceIds", envelope);
+        }
         var generation = envelope.get("generation").getAsLong();
         if (generation < 0) return rejected("missing_identity", "Bridge generation 不能为负数", envelope);
         return new Decoded(new BridgeCommand.V1(
@@ -70,7 +74,7 @@ public final class BridgeProtocolCodec {
             SessionId.of(envelope.get("sessionId").getAsString()),
             envelope.get("turnId").getAsString(),
             generation,
-            envelope.getAsJsonObject("payload").deepCopy(),
+            payload.deepCopy(),
             false
         ));
     }
@@ -115,6 +119,15 @@ public final class BridgeProtocolCodec {
 
     private boolean objectField(JsonObject object, String key) {
         return object != null && object.has(key) && object.get(key).isJsonObject();
+    }
+
+    private boolean validSendPayload(JsonObject payload) {
+        if (!stringFieldAllowEmpty(payload, "text") || !payload.has("referenceIds")
+            || !payload.get("referenceIds").isJsonArray()) return false;
+        for (var value : payload.getAsJsonArray("referenceIds")) {
+            if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return false;
+        }
+        return true;
     }
 
     private long integer(JsonObject object, String key, long fallback) {

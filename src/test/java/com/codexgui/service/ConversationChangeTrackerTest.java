@@ -44,6 +44,25 @@ final class ConversationChangeTrackerTest {
     }
 
     @Test
+    void summaryCountsOnlyChangedLinesAcrossSeparateRegions() throws IOException {
+        var original = String.join("\n",
+            "line 1", "line 2", "line 3", "line 4", "line 5", "line 6",
+            "line 7", "line 8", "line 9", "line 10", "line 11", "line 12") + "\n";
+        var changed = original
+            .replace("line 2\n", "updated 2\n")
+            .replace("line 11\n", "updated 11\n");
+        write("file.txt", original);
+        var tracker = new ConversationChangeTracker(root);
+
+        tracker.trackBeforeWrite("session", "file.txt");
+        write("file.txt", changed);
+
+        var summary = tracker.listSummaries("session").getFirst();
+        assertEquals(2, summary.addedLines());
+        assertEquals(2, summary.deletedLines());
+    }
+
+    @Test
     void addedAndDeletedFilesRestoreTheirFirstBaseline() throws IOException {
         var added = root.resolve("added.txt");
         var deleted = write("deleted.txt", "before\n");
@@ -89,6 +108,56 @@ final class ConversationChangeTrackerTest {
         assertEquals(1, tracker.listSummaries("session").size());
         assertArrayEquals(bytes("before\n"), tracker.readDetails("session", tracked).beforeContent());
         assertFalse(tracker.isTracked("session", root.resolve("unrelated.txt")));
+    }
+
+    @Test
+    void staleProviderDiffDoesNotCreateAnInvalidBaseline() throws IOException {
+        write("file.txt", "latest\n");
+        var tracker = new ConversationChangeTracker(root);
+
+        tracker.trackProviderDiff("session", "turn-1", textDiff("file.txt", "before", "intermediate"));
+
+        assertTrue(tracker.listSummaries("session").isEmpty());
+    }
+
+    @Test
+    void latestCumulativeDiffReplacesBaselineDerivedDuringTheSameTurn() throws IOException {
+        var path = write("file.txt", "new first\nsame\nnew last\n");
+        var tracker = new ConversationChangeTracker(root);
+        var earlyDiff = textDiff("file.txt", "old first", "new first");
+        var cumulativeDiff = """
+            diff --git a/file.txt b/file.txt
+            --- a/file.txt
+            +++ b/file.txt
+            @@ -1 +1 @@
+            -old first
+            +new first
+            @@ -3 +3 @@
+            -old last
+            +new last
+            """;
+
+        tracker.trackProviderDiff("session", "turn-1", earlyDiff);
+        tracker.trackProviderDiff("session", "turn-1", cumulativeDiff);
+
+        assertArrayEquals(bytes("old first\nsame\nold last\n"),
+            tracker.readDetails("session", path).beforeContent());
+    }
+
+    @Test
+    void binaryProviderModificationIsNotMisclassifiedAsAnAddedFile() throws IOException {
+        write("asset.bin", "current\n");
+        var tracker = new ConversationChangeTracker(root);
+        var diff = """
+            diff --git a/asset.bin b/asset.bin
+            Binary files a/asset.bin and b/asset.bin differ
+            """;
+
+        tracker.trackProviderDiff("session", "turn-1", diff);
+
+        var summary = tracker.listSummaries("session").getFirst();
+        assertEquals(ChangeEntry.Kind.MODIFIED, summary.kind());
+        assertFalse(summary.reversible());
     }
 
     @Test

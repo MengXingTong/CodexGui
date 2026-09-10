@@ -111,12 +111,22 @@ test('预览页可切换回默认身份', async ({page}) => {
   expect(sent).toMatchObject({type: 'selectAgent', payload: {id: ''}});
 });
 
-test('捕获列表显示相对路径并可从右键菜单打开所在文件夹', async ({page}) => {
+test('捕获列表悬浮文件名时在上方显示相对路径并可打开所在文件夹', async ({page}) => {
   await openEditor(page, false);
   await page.getByRole('button', {name: '编辑'}).click();
 
   const change = page.locator('[data-change-row="0"]');
-  await expect(change).toHaveAttribute('title', 'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java');
+  const fileName = change.locator('.change-name');
+  await fileName.hover();
+  const tooltip = page.locator('#change-path-tooltip');
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toHaveText('src/main/java/com/codexgui/ui/CodexToolWindowPanel.java');
+  const positions = await Promise.all([fileName.boundingBox(), tooltip.boundingBox()]);
+  expect(positions[0]).not.toBeNull();
+  expect(positions[1]).not.toBeNull();
+  expect(positions[1]!.y + positions[1]!.height).toBeLessThan(positions[0]!.y);
+  expect(Math.abs(positions[1]!.x - positions[0]!.x)).toBeLessThanOrEqual(1);
+
   await change.click({button: 'right'});
   await page.getByRole('button', {name: '在文件夹中打开'}).click();
 
@@ -305,4 +315,48 @@ test('换行、滚动、内部拖动和外部落点保持结构化文档', async
     previewLastMessage?: {type: string; payload: {text: string; referenceIds: string[]}};
   }).previewLastMessage);
   expect(sent).toMatchObject({type: 'send', payload: {text, referenceIds}});
+});
+
+test('自定义模型固定显示在供应商模型前并可直接添加', async ({page}) => {
+  await openEditor(page, false);
+  await page.getByTitle('模型').click();
+
+  const labels = page.locator('.model-selector-menu .model-group-label');
+  await expect(labels).toHaveText(['自定义模型', '供应商模型']);
+  await expect(page.locator('.model-custom-row').first()).toContainText('company/custom-model');
+
+  await page.getByRole('button', {name: '添加自定义模型'}).click();
+  await expect(page.locator('[data-menu="model"]')).toContainText('preview/custom-model');
+});
+
+test('Codex 输入栏可选择完全访问沙箱', async ({page}) => {
+  await openEditor(page, false);
+  await page.getByTitle('文件沙箱：工作区').click();
+  await page.locator('[data-choice="sandbox"][data-value="danger-full-access"]').click();
+
+  await expect(page.getByTitle('文件沙箱：完全访问')).toBeVisible();
+  const sent = await page.evaluate(() => (window as Window & {
+    previewLastMessage?: {type: string; payload: {key: string; value: string}};
+  }).previewLastMessage);
+  expect(sent).toMatchObject({
+    type: 'setting',
+    payload: {key: 'sandbox', value: 'danger-full-access'},
+  });
+});
+
+test('其它页签运行时仍可在空闲页签切换 Claude 渠道', async ({page}) => {
+  await openEditor(page, false);
+  await page.evaluate(() => CodexGui.receive(previewEnvelope('busy', {busy: true, queuedCount: 0})));
+  await expect(page.getByTitle('停止')).toBeVisible();
+
+  await page.getByRole('button', {name: '新建页签'}).click();
+  await page.getByTitle('聊天设置').first().click();
+  await page.getByRole('button', {name: /切换当前渠道/}).click();
+  await page.locator('[data-provider-select="claude"]').click();
+
+  const sent = await page.evaluate(() => (window as Window & {
+    previewLastMessage?: {type: string; sessionId: string; payload: {provider: string}};
+  }).previewLastMessage);
+  expect(sent).toMatchObject({type: 'new', payload: {provider: 'claude'}});
+  expect(sent?.sessionId).not.toBe('default');
 });

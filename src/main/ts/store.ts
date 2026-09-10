@@ -18,6 +18,7 @@ export interface BridgeState {
   threadId?: unknown;
   history?: unknown[];
   historyProvider?: string;
+  customModels?: unknown[];
   changes?: unknown[];
   attachments?: unknown[];
   fileReferences?: unknown[];

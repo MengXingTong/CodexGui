@@ -1,6 +1,6 @@
 {
   "name": "codedeck-frontend",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "private": true,
   "scripts": {
     "build": "esbuild src/main/ts/app.ts --bundle --format=iife --platform=browser --target=chrome120 --outfile=build/generated-resources/web/app.js",

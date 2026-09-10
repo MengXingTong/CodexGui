@@ -3,6 +3,7 @@ package com.codexgui.settings;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -64,5 +65,17 @@ class CodexSettingsStateTest {
         assertEquals("model-a", snapshot.model());
         assertEquals("https://provider-a.example", snapshot.provider().baseUrl());
         assertNotEquals(state.model, snapshot.model());
+    }
+
+    @Test
+    void normalizesAndPersistsProviderCustomModels() {
+        var component = new CodexSettingsState();
+        var state = component.getState();
+        var provider = component.activeProvider(CodexSettingsState.CLAUDE_CHANNEL);
+        provider.customModels = new ArrayList<>(List.of(" claude-custom ", "claude-custom", ""));
+
+        component.activeProvider(CodexSettingsState.CLAUDE_CHANNEL);
+
+        assertEquals(List.of("claude-custom"), provider.customModels);
     }
 }

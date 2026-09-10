@@ -252,6 +252,8 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 case MCP -> showMcpServers();
                 case USAGE -> showUsage();
                 case SETTING -> updateSetting(string(request, "key", ""), string(request, "value", ""));
+                case ADD_CUSTOM_MODEL -> addCustomModel();
+                case REMOVE_CUSTOM_MODEL -> removeCustomModel(string(request, "model", ""));
                 case SELECT_PROVIDER -> selectProvider(
                     string(request, "provider", "codex"),
                     string(request, "title", "")
@@ -317,6 +319,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         if (session.threadId() != null) state.addProperty("threadId", session.threadId());
         state.addProperty("model", activeModel(settings));
         state.add("models", providerModels(settings));
+        state.add("customModels", customModels());
         state.addProperty("provider", session.provider());
         state.addProperty("providerProfileId", session.providerProfileId());
         state.addProperty("showThinking", settings.showThinking);
@@ -385,6 +388,8 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             ? Math.min(100.0, session.usageUsedTokens() * 100.0 / session.usageMaxTokens()) : 0.0);
         sendEvent(usage);
         setBusy(session, session.busy());
+        // 页签激活后重发该渠道的模型与策略，不能沿用前一个页签的供应商状态。
+        publishSettings();
     }
 
     private void sendInput(String text) {
@@ -681,7 +686,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             prompt,
             input.attachments(),
             input.fileReferences(),
-            providerProfile.builtIn() ? "" : providerProfile.model(),
+            providerProfile.builtIn() ? settings.claudeModel() : providerProfile.model(),
             settings.reasoningEffort().value(),
             settings.serviceTier().value(),
             settings.approvalPolicy().value(),
@@ -902,10 +907,11 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var profile = settingsService.provider(profileId);
         if (profile == null || profile.revision != profileRevision || modelIds.isEmpty()) return;
 
-        // 接口模型目录是最终依据；上次选择失效时切到接口建议项或首项。
+        // 自定义模型固定排在接口目录前；接口刷新不能覆盖用户手动指定的选择。
         var settings = settingsService.getState();
         var currentModel = profile.builtIn ? settings.model : profile.model;
-        var nextModel = selectProviderModel(modelIds, currentModel, defaultModel);
+        var options = modelOptions(profile, modelIds);
+        var nextModel = selectProviderModel(options, currentModel, defaultModel);
         if (profile.builtIn) settings.model = nextModel;
         else profile.model = nextModel;
         var models = new JsonArray();
@@ -932,6 +938,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var settings = CodexSettingsState.getInstance().getState();
         var state = new JsonObject();
         state.add("models", providerModels(settings));
+        state.add("customModels", customModels());
         state.addProperty("model", activeModel(settings));
         var event = event(BridgeEvent.Type.BOOTSTRAP);
         event.add("state", state);
@@ -1021,7 +1028,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var settingsService = CodexSettingsState.getInstance();
         var profile = settingsService.provider(id);
         if (profile == null) return;
-        if (sessionRegistry.sessions().stream().anyMatch(ConversationSession::busy)) {
+        if (hasBusySession(profile.channel)) {
             toast("任务运行期间不能切换供应商配置");
             return;
         }
@@ -1082,13 +1089,13 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             return;
         }
         // 模型目录返回期间可能启动了任务，此时仍保持原供应商。
-        if (sessionRegistry.sessions().stream().anyMatch(ConversationSession::busy)) {
+        if (hasBusySession(channel)) {
             toast("任务运行期间不能切换供应商配置");
             publishProviderStatus();
             return;
         }
 
-        var selectedModel = selectProviderModel(modelIds, profile.model, "");
+        var selectedModel = selectProviderModel(modelOptions(profile, modelIds), profile.model, "");
         if (selectedModel.isBlank()) {
             toast("无法启用供应商：模型目录未返回可用模型");
             publishProviderStatus();
@@ -1161,7 +1168,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             return;
         }
         var activeEdit = existing != null && Objects.equals(settingsService.activeProviderId(existing.channel), existing.id);
-        if (activeEdit && sessionRegistry.sessions().stream().anyMatch(ConversationSession::busy)) {
+        if (activeEdit && hasBusySession(existing.channel)) {
             providerSaveResult(false, "任务运行期间不能修改正在使用的供应商");
             return;
         }
@@ -1206,7 +1213,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var profile = settingsService.provider(id);
         if (profile == null || profile.builtIn) return;
         var active = Objects.equals(settingsService.activeProviderId(profile.channel), profile.id);
-        if (active && sessionRegistry.sessions().stream().anyMatch(ConversationSession::busy)) {
+        if (active && hasBusySession(profile.channel)) {
             toast("任务运行期间不能删除正在使用的供应商");
             return;
         }
@@ -1235,6 +1242,11 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         }
     }
 
+    private boolean hasBusySession(String channel) {
+        return sessionRegistry.sessions().stream()
+            .anyMatch(session -> session.busy() && Objects.equals(session.provider(), channel));
+    }
+
     private void applyProviderRuntimeChange(String channel) {
         if (!Objects.equals(channel, CodexSettingsState.CODEX_CHANNEL)) {
             loadModels(channel);
@@ -1261,13 +1273,38 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var provider = activeSession().provider();
         var profile = CodexSettingsState.getInstance().activeProvider(provider);
         var loaded = providerModelOptions.get(profile.id);
-        if (loaded != null) return loaded.deepCopy();
+        if (loaded != null) {
+            var models = new JsonArray();
+            modelOptions(profile, modelIds(loaded)).forEach(models::add);
+            return models;
+        }
         var models = new JsonArray();
+        profile.customModels.forEach(models::add);
         var model = profile.builtIn
             ? (Objects.equals(provider, "claude") ? settings.claudeModel : settings.model)
             : profile.model;
-        if (!model.isBlank()) models.add(model);
+        if (!model.isBlank() && !profile.customModels.contains(model)) models.add(model);
         return models;
+    }
+
+    private JsonArray customModels() {
+        var profile = CodexSettingsState.getInstance().activeProvider(activeSession().provider());
+        var models = new JsonArray();
+        profile.customModels.forEach(models::add);
+        return models;
+    }
+
+    private List<String> modelOptions(CodexSettingsState.ProviderProfile profile, List<String> loadedModels) {
+        var models = new LinkedHashSet<String>();
+        models.addAll(profile.customModels);
+        models.addAll(loadedModels);
+        return List.copyOf(models);
+    }
+
+    private List<String> modelIds(JsonArray models) {
+        var result = new ArrayList<String>();
+        for (var model : models) result.add(model.getAsString());
+        return result;
     }
 
     private void loadHistory(String search) {
@@ -2061,7 +2098,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             : factory.create(project, sourceDocument, sourceFile);
         var request = new SimpleDiffRequest(
             (Objects.equals(activeSession().provider(), "claude") ? "Claude Code 修改 · " : "Codex 修改 · ")
-                + details.displayName(changeService.getRoot()),
+                + change.path().getFileName(),
             beforeContent,
             afterContent,
             "AI 修改前（只读）",
@@ -2236,6 +2273,54 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         publishSettings();
     }
 
+    private void addCustomModel() {
+        var model = Messages.showInputDialog(
+            project,
+            "输入供应商接受的完整模型 ID：",
+            "添加自定义模型",
+            Messages.getQuestionIcon()
+        );
+        if (model == null) return;
+        model = model.trim();
+        if (model.isBlank()) {
+            toast("模型 ID 不能为空");
+            return;
+        }
+
+        // 自定义模型归属于当前渠道的当前供应商，并立即成为本页签的选择。
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        var profile = settingsService.activeProvider(activeSession().provider());
+        profile.customModels.remove(model);
+        profile.customModels.add(0, model);
+        if (!profile.builtIn) profile.model = model;
+        else if (Objects.equals(profile.channel, CodexSettingsState.CLAUDE_CHANNEL)) settings.claudeModel = model;
+        else settings.model = model;
+        publishSettings();
+        toast("已添加并选择自定义模型：" + model);
+    }
+
+    private void removeCustomModel(String model) {
+        model = Objects.requireNonNullElse(model, "").trim();
+        if (model.isBlank()) return;
+        var settingsService = CodexSettingsState.getInstance();
+        var settings = settingsService.getState();
+        var profile = settingsService.activeProvider(activeSession().provider());
+        if (!profile.customModels.remove(model)) return;
+
+        // 删除当前选择时回退到同一供应商的下一项，不能带入另一渠道的模型。
+        if (Objects.equals(activeModel(settings), model)) {
+            var loaded = providerModelOptions.get(profile.id);
+            var remoteModels = loaded == null ? List.<String>of() : modelIds(loaded);
+            var nextModel = selectProviderModel(modelOptions(profile, remoteModels), "", "");
+            if (!profile.builtIn) profile.model = nextModel;
+            else if (Objects.equals(profile.channel, CodexSettingsState.CLAUDE_CHANNEL)) settings.claudeModel = nextModel;
+            else settings.model = nextModel;
+        }
+        publishSettings();
+        toast("已移除自定义模型：" + model);
+    }
+
     private void toggleThinking() {
         var settings = CodexSettingsState.getInstance().getState();
         settings.showThinking = !settings.showThinking;
@@ -2382,6 +2467,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         state.addProperty("provider", session.provider());
         state.addProperty("model", activeModel(settings));
         state.add("models", providerModels(settings));
+        state.add("customModels", customModels());
         state.addProperty("effort", settings.reasoningEffort);
         state.addProperty("serviceTier", settings.serviceTier);
         state.addProperty("approval", settings.approvalPolicy);

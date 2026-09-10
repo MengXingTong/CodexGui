@@ -9,6 +9,7 @@ import com.google.gson.JsonParser;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -16,6 +17,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 
@@ -35,9 +37,11 @@ public final class ProviderModelService {
         CodexSettingsState.ProviderProfileSnapshot provider,
         String apiKey
     ) {
-        var request = request(provider, apiKey);
-        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-            .thenApply(response -> parseResponse(response.statusCode(), response.body()));
+        var endpoint = modelsEndpoint(provider);
+        if (provider.channel() == CodexSettingsState.ProviderChannel.CLAUDE) {
+            endpoint = withQueryParameter(endpoint, "limit", "1000");
+        }
+        return listModels(provider, apiKey, endpoint, new LinkedHashSet<>(), new LinkedHashSet<>());
     }
 
     static URI modelsEndpoint(CodexSettingsState.ProviderProfileSnapshot provider) {
@@ -76,11 +80,40 @@ public final class ProviderModelService {
         return new ArrayList<>(ids);
     }
 
-    private HttpRequest request(CodexSettingsState.ProviderProfileSnapshot provider, String apiKey) {
-        var builder = HttpRequest.newBuilder(modelsEndpoint(provider))
+    private CompletableFuture<List<String>> listModels(
+        CodexSettingsState.ProviderProfileSnapshot provider,
+        String apiKey,
+        URI endpoint,
+        LinkedHashSet<String> models,
+        Set<URI> visitedPages
+    ) {
+        if (!visitedPages.add(endpoint)) {
+            return CompletableFuture.failedFuture(new IOException("供应商模型接口返回了重复分页地址"));
+        }
+        return client.sendAsync(request(provider, apiKey, endpoint), HttpResponse.BodyHandlers.ofString())
+            .thenCompose(response -> {
+                var pageModels = parseResponse(response.statusCode(), response.body());
+                models.addAll(pageModels);
+                var nextPage = nextPage(response.body(), endpoint, provider.channel());
+                if (nextPage != null) {
+                    return listModels(provider, apiKey, nextPage, models, visitedPages);
+                }
+                if (models.isEmpty()) {
+                    return CompletableFuture.failedFuture(new IOException("供应商模型接口未返回可用模型"));
+                }
+                return CompletableFuture.completedFuture(new ArrayList<>(models));
+            });
+    }
+
+    private HttpRequest request(
+        CodexSettingsState.ProviderProfileSnapshot provider,
+        String apiKey,
+        URI endpoint
+    ) {
+        var builder = HttpRequest.newBuilder(endpoint)
             .timeout(REQUEST_TIMEOUT)
             .header("Accept", "application/json")
-            .header("User-Agent", "CodeDeck/0.5.2")
+            .header("User-Agent", "CodeDeck/0.5.3")
             .GET();
 
         // 两类渠道沿用各自 CLI 的认证约定，避免模型请求与实际会话使用不同凭据。
@@ -98,11 +131,47 @@ public final class ProviderModelService {
             throw new CompletionException(new IOException("供应商模型接口返回 HTTP " + statusCode));
         }
         try {
-            var models = parseModels(body);
-            if (models.isEmpty()) throw new IOException("供应商模型接口未返回可用模型");
-            return models;
-        } catch (RuntimeException | IOException error) {
+            return parseModels(body);
+        } catch (RuntimeException error) {
             throw new CompletionException(error);
+        }
+    }
+
+    static URI nextPage(String body, URI current, CodexSettingsState.ProviderChannel channel) {
+        var root = JsonParser.parseString(body);
+        if (!root.isJsonObject()) return null;
+        var object = root.getAsJsonObject();
+        var hasMore = object.has("has_more") && object.get("has_more").isJsonPrimitive()
+            && object.get("has_more").getAsBoolean();
+        if (hasMore && object.has("last_id") && object.get("last_id").isJsonPrimitive()) {
+            return withQueryParameter(current, "after_id", object.get("last_id").getAsString());
+        }
+        for (var key : List.of("next_cursor", "nextCursor")) {
+            if (!object.has(key) || object.get(key).isJsonNull()) continue;
+            var cursor = object.get(key).getAsString().trim();
+            if (!cursor.isBlank()) return withQueryParameter(current,
+                channel == CodexSettingsState.ProviderChannel.CLAUDE ? "after_id" : "cursor", cursor);
+        }
+        return null;
+    }
+
+    private static URI withQueryParameter(URI uri, String key, String value) {
+        var encoded = URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
+        var query = uri.getRawQuery();
+        var pairs = new ArrayList<String>();
+        if (query != null && !query.isBlank()) {
+            for (var pair : query.split("&")) {
+                if (!pair.startsWith(key + "=")) pairs.add(pair);
+            }
+        }
+        pairs.add(key + "=" + encoded);
+        try {
+            var source = uri.toASCIIString();
+            var queryStart = source.indexOf('?');
+            if (queryStart >= 0) source = source.substring(0, queryStart);
+            return URI.create(source + "?" + String.join("&", pairs));
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException("供应商模型分页地址无效", error);
         }
     }
 

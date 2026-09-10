@@ -10,7 +10,7 @@
   <script>
     const previewContextEnabled = location.search.includes('context');
     const previewReferencesEnabled = location.search.includes('references');
-    const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',serviceTier:'standard',streamResponses:true,showReasoning:true,sendShortcut:'enter',permissionDialogTimeoutSeconds:300,sendOpenedFilePath:previewContextEnabled,activeFile:previewContextEnabled?'src/main/java/com/codexgui/client/BoundaryDreamlandClientConnectionManager.java':'',activeFileStartLine:previewContextEnabled?128:0,activeFileEndLine:previewContextEnabled?146:0,usagePercentage:18.6,usageUsedTokens:48062,usageMaxTokens:258400,diffExpandedByDefault:false,newSessionConfirmEnabled:true,askUserQuestionNotificationEnabled:true,askUserQuestionSoundEnabled:true,taskCompletionNotificationEnabled:true,taskCompletionSoundEnabled:true,systemNotificationOnlyWhenUnfocused:false,soundOnlyWhenUnfocused:false,notificationSound:'chime',customSoundPath:'',globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['gpt-5.6-codex','gpt-5.4'],attachments:[],fileReferences:previewReferencesEnabled?[{id:'ref-1',name:'BoundaryDreamlandEditor.Target.cs',path:'E:\\Projects\\BoundaryDreamland\\Source\\BoundaryDreamlandEditor.Target.cs',directory:false},{id:'ref-2',name:'feature-with-a-very-long-directory-name',path:'E:\\Projects\\BoundaryDreamland\\feature-with-a-very-long-directory-name',directory:true},{id:'ref-3',name:'README.md',path:'E:\\Projects\\BoundaryDreamland\\README.md',directory:false}]:[]};
+    const previewState = {connected:true,title:'实现 Codex CLI 原生 JetBrains 界面',threadId:'019c-demo',model:'gpt-5.6-codex',effort:'high',approval:'never',sandbox:'workspace-write',serviceTier:'standard',streamResponses:true,showReasoning:true,sendShortcut:'enter',permissionDialogTimeoutSeconds:300,sendOpenedFilePath:previewContextEnabled,activeFile:previewContextEnabled?'src/main/java/com/codexgui/client/BoundaryDreamlandClientConnectionManager.java':'',activeFileStartLine:previewContextEnabled?128:0,activeFileEndLine:previewContextEnabled?146:0,usagePercentage:18.6,usageUsedTokens:48062,usageMaxTokens:258400,diffExpandedByDefault:false,newSessionConfirmEnabled:true,askUserQuestionNotificationEnabled:true,askUserQuestionSoundEnabled:true,taskCompletionNotificationEnabled:true,taskCompletionSoundEnabled:true,systemNotificationOnlyWhenUnfocused:false,soundOnlyWhenUnfocused:false,notificationSound:'chime',customSoundPath:'',globalInstructions:'始终使用中文回复，并先给出结论。',projectInstructions:'修改后运行测试并报告结果。',activeAgentId:'reviewer',agents:[{id:'reviewer',name:'代码审查员',instructions:'重点检查正确性、边界条件和可维护性。'}],models:['company/custom-model','gpt-5.6-codex','gpt-5.4'],customModels:['company/custom-model'],attachments:[],fileReferences:previewReferencesEnabled?[{id:'ref-1',name:'BoundaryDreamlandEditor.Target.cs',path:'E:\\Projects\\BoundaryDreamland\\Source\\BoundaryDreamlandEditor.Target.cs',directory:false},{id:'ref-2',name:'feature-with-a-very-long-directory-name',path:'E:\\Projects\\BoundaryDreamland\\feature-with-a-very-long-directory-name',directory:true},{id:'ref-3',name:'README.md',path:'E:\\Projects\\BoundaryDreamland\\README.md',directory:false}]:[]};
     Object.assign(previewState, {
       provider: 'codex',
       showThinking: true,
@@ -102,6 +102,18 @@
         previewReceive('providers',{items:previewState.providers});
       }
       if (message.action === 'setting') previewState[message.key] = message.value;
+      if (message.action === 'addCustomModel') {
+        previewState.customModels = ['preview/custom-model',...previewState.customModels.filter(model => model !== 'preview/custom-model')];
+        previewState.models = [...new Set([...previewState.customModels,...previewState.models])];
+        previewState.model = 'preview/custom-model';
+        previewReceive('bootstrap',{state:previewState});
+      }
+      if (message.action === 'removeCustomModel') {
+        previewState.customModels = previewState.customModels.filter(model => model !== message.model);
+        previewState.models = previewState.models.filter(model => model !== message.model);
+        if (previewState.model === message.model) previewState.model = previewState.models[0] || '';
+        previewReceive('bootstrap',{state:previewState});
+      }
       if (message.action === 'behaviorSetting') previewState[message.key] = message.value;
       if (message.action === 'selectAgent') previewState.activeAgentId = previewState.agents.some(agent => agent.id === message.id) ? message.id : '';
       if (['toggleThinking','toggleStreaming','selectProvider','setting','behaviorSetting'].includes(message.action)) previewReceive('bootstrap',{state:previewState});

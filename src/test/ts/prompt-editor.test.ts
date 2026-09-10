@@ -46,6 +46,14 @@ function createEditor(snapshot: PromptSnapshot, references: PromptFileReference[
   return {editor, callbacks};
 }
 
+function pastePlainText(editor: PromptEditor, text: string): void {
+  const event = new Event('paste', {bubbles: true, cancelable: true});
+  Object.defineProperty(event, 'clipboardData', {
+    value: {getData: (type: string) => type === 'text/plain' ? text : ''},
+  });
+  editor.element.dispatchEvent(event);
+}
+
 afterEach(() => {
   editors.splice(0).forEach(editor => editor.destroy());
   document.body.replaceChildren();
@@ -91,6 +99,20 @@ describe('PromptEditor 文档模型', () => {
 });
 
 describe('PromptEditor 引用事务', () => {
+  it('粘贴路径后的成员描述时只把有效文件路径转换为引用', () => {
+    const path = 'D:\\devmain\\_server\\UnrealEngine\\Projects\\JinYongPVP\\Source\\JinYongPVP\\GUI\\SkillButtonWidgets\\PropButtonItem.h';
+    const {editor, callbacks} = createEditor({segments: [], anchor: 0, head: 0});
+
+    pastePlainText(editor, `@${path}的CooldownMaterialImage   `);
+    expect(callbacks.onAddReferences).toHaveBeenCalledWith([path]);
+
+    editor.reconcileReferences([{...firstReference, name: 'PropButtonItem.h', path}]);
+    expect(editor.serializeForSend()).toEqual({
+      text: `${PROMPT_REFERENCE_MARKER}的CooldownMaterialImage`,
+      referenceIds: ['ref-1'],
+    });
+  });
+
   it('异步引用书签会跨后续输入映射并插入原位置', () => {
     const {editor, callbacks} = createEditor({segments: [{type: 'text', text: 'ab'}], anchor: 1, head: 1});
 

@@ -611,7 +611,18 @@ export class PromptEditor {
 
     const plain = event.clipboardData?.getData('text/plain') || '';
     const match = /^@((?:[a-zA-Z]:[\\/]|\\\\|\/).+)$/.exec(plain.trim());
-    return match ? {text: PROMPT_REFERENCE_MARKER, referenceIds: [], paths: [match[1]], plain} : null;
+    if (!match) return null;
+
+    // 从“文件路径的成员描述”中剥离中文说明，避免把成员名一起交给后端校验。
+    const describedFile = /^(.*\.[a-zA-Z0-9_+-]+)(的.*)$/.exec(match[1]);
+    const path = describedFile?.[1] || match[1];
+    const trailingText = describedFile?.[2] || '';
+    return {
+      text: PROMPT_REFERENCE_MARKER + trailingText,
+      referenceIds: [],
+      paths: [path],
+      plain,
+    };
   }
 
   private clipboardPayload(fragment: Fragment): PromptClipboardPayload {

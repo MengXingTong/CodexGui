@@ -62,6 +62,8 @@ public sealed interface BridgeCommand permits BridgeCommand.V1 {
         MCP("mcp"),
         USAGE("usage"),
         SETTING("setting"),
+        ADD_CUSTOM_MODEL("addCustomModel"),
+        REMOVE_CUSTOM_MODEL("removeCustomModel"),
         SELECT_PROVIDER("selectProvider"),
         ACTIVATE_PROVIDER_PROFILE("activateProviderProfile"),
         SAVE_PROVIDER_PROFILE("saveProviderProfile"),

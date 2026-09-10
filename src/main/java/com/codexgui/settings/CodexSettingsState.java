@@ -12,7 +12,7 @@ import java.util.Objects;
 
 @State(name = "CodexGuiSettings", storages = @Storage("codex-gui.xml"))
 public final class CodexSettingsState implements PersistentStateComponent<CodexSettingsState.StateData> {
-    public static final int CURRENT_SCHEMA_VERSION = 1;
+    public static final int CURRENT_SCHEMA_VERSION = 2;
     public static final String CODEX_CHANNEL = "codex";
     public static final String CLAUDE_CHANNEL = "claude";
     public static final String CODEX_LOCAL_PROVIDER_ID = "codex-local";
@@ -130,6 +130,7 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
         public String baseUrl = "";
         // 仅记录该供应商在聊天模型选择器中的上次选择，不属于供应商连接配置。
         public String model = "";
+        public List<String> customModels = new ArrayList<>();
         public String wireApi = "responses";
         public boolean builtIn;
         public int revision = 1;
@@ -303,6 +304,13 @@ public final class CodexSettingsState implements PersistentStateComponent<CodexS
             if (item.name == null) item.name = "";
             if (item.baseUrl == null) item.baseUrl = "";
             if (item.model == null) item.model = "";
+            if (item.customModels == null) item.customModels = new ArrayList<>();
+            item.customModels = item.customModels.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
             if (!"chat".equals(item.wireApi)) item.wireApi = "responses";
             if (item.revision < 1) item.revision = 1;
         }

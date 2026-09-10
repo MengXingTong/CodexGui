@@ -9,6 +9,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -50,6 +51,7 @@ final class ProviderModelServiceTest {
             assertNull(exchange.getRequestHeaders().getFirst("x-api-key"));
             assertEquals("Bearer secret-claude", exchange.getRequestHeaders().getFirst("Authorization"));
             assertEquals("2023-06-01", exchange.getRequestHeaders().getFirst("anthropic-version"));
+            assertEquals("limit=1000", exchange.getRequestURI().getQuery());
             var bytes = "{\"data\":[{\"id\":\"claude-gateway-model\"}]}".getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200, bytes.length);
             try (var output = exchange.getResponseBody()) { output.write(bytes); }
@@ -60,6 +62,29 @@ final class ProviderModelServiceTest {
         var models = new ProviderModelService().listModels(profile.snapshot(), "secret-claude").get();
 
         assertEquals(List.of("claude-gateway-model"), models);
+    }
+
+    @Test
+    void loadsEveryClaudeModelPage() throws Exception {
+        var requests = new AtomicInteger();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/models", exchange -> {
+            requests.incrementAndGet();
+            var secondPage = exchange.getRequestURI().getQuery().contains("after_id=claude-page-1");
+            var body = secondPage
+                ? "{\"data\":[{\"id\":\"claude-page-2\"}],\"has_more\":false}"
+                : "{\"data\":[{\"id\":\"claude-page-1\"}],\"has_more\":true,\"last_id\":\"claude-page-1\"}";
+            var bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (var output = exchange.getResponseBody()) { output.write(bytes); }
+        });
+        server.start();
+
+        var profile = profile(CodexSettingsState.CLAUDE_CHANNEL, "");
+        var models = new ProviderModelService().listModels(profile.snapshot(), "secret-claude").get();
+
+        assertEquals(List.of("claude-page-1", "claude-page-2"), models);
+        assertEquals(2, requests.get());
     }
 
     @Test

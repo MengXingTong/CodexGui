@@ -62,4 +62,22 @@ class CodexAppServerServiceTest {
         assertEquals(20, CodexAppServerService.INITIALIZE_TIMEOUT_SECONDS);
         assertEquals(2, CodexAppServerService.STOP_TIMEOUT_SECONDS);
     }
+
+    @Test
+    void historyIncludesInteractiveThreadsFromEveryCodexClient() {
+        var params = CodexAppServerService.threadListParams("D:\\Project", "  fix  ");
+
+        assertEquals("D:\\Project", params.get("cwd").getAsString());
+        assertEquals("fix", params.get("searchTerm").getAsString());
+        assertFalse(params.has("sourceKinds"));
+    }
+
+    @Test
+    void automaticWorkspaceSandboxAllowsCommandNetworkAccess() {
+        var automatic = CodexAppServerService.sandboxPolicy("workspace-write", "never");
+        var approvalRequired = CodexAppServerService.sandboxPolicy("workspace-write", "on-request");
+
+        assertTrue(automatic.get("networkAccess").getAsBoolean());
+        assertFalse(approvalRequired.get("networkAccess").getAsBoolean());
+    }
 }

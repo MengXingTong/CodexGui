@@ -205,7 +205,7 @@ public final class CodexAppServerService implements Disposable {
             var clientInfo = new JsonObject();
             clientInfo.addProperty("name", "codedeck-jetbrains");
             clientInfo.addProperty("title", "CodeDeck for JetBrains");
-            clientInfo.addProperty("version", "0.5.2");
+            clientInfo.addProperty("version", "0.5.3");
             var params = new JsonObject();
             params.add("clientInfo", clientInfo);
             params.add("capabilities", capabilities);
@@ -300,23 +300,41 @@ public final class CodexAppServerService implements Disposable {
     }
 
     public CompletableFuture<JsonObject> listThreads(String searchTerm) {
+        return request("thread/list", threadListParams(project.getBasePath(), searchTerm));
+    }
+
+    static JsonObject threadListParams(String basePath, String searchTerm) {
         var params = new JsonObject();
         params.addProperty("limit", 100);
         params.addProperty("sortKey", "updated_at");
         params.addProperty("sortDirection", "desc");
-        var sourceKinds = new JsonArray();
-        sourceKinds.add("appServer");
-        params.add("sourceKinds", sourceKinds);
-        if (project.getBasePath() != null) params.addProperty("cwd", project.getBasePath());
+        if (basePath != null) params.addProperty("cwd", basePath);
         if (searchTerm != null && !searchTerm.isBlank()) params.addProperty("searchTerm", searchTerm.trim());
-        return request("thread/list", params);
+        return params;
     }
 
     public CompletableFuture<JsonObject> listModels() {
+        return listModels(null, new JsonArray(), new JsonObject());
+    }
+
+    private CompletableFuture<JsonObject> listModels(String cursor, JsonArray models, JsonObject page) {
         var params = new JsonObject();
         params.addProperty("limit", 100);
         params.addProperty("includeHidden", false);
-        return request("model/list", params);
+        if (cursor != null && !cursor.isBlank()) params.addProperty("cursor", cursor);
+        return request("model/list", params).thenCompose(result -> {
+            // 模型目录按游标读取完整结果，避免只显示首批模型。
+            var data = result.getAsJsonArray("data");
+            if (data != null) data.forEach(models::add);
+            if (page.size() == 0) result.entrySet().stream()
+                .filter(entry -> !Objects.equals(entry.getKey(), "data") && !Objects.equals(entry.getKey(), "nextCursor"))
+                .forEach(entry -> page.add(entry.getKey(), entry.getValue()));
+            var nextCursor = result.has("nextCursor") && !result.get("nextCursor").isJsonNull()
+                ? result.get("nextCursor").getAsString() : "";
+            if (!nextCursor.isBlank()) return listModels(nextCursor, models, page);
+            page.add("data", models);
+            return CompletableFuture.completedFuture(page);
+        });
     }
 
     public CompletableFuture<JsonObject> listSkills(boolean forceReload) {
@@ -490,7 +508,7 @@ public final class CodexAppServerService implements Disposable {
         if (model != null && !model.isBlank()) params.addProperty("model", model);
         if (effort != null && !effort.isBlank()) params.addProperty("effort", effort);
         if (serviceTier != null && !serviceTier.isBlank() && !Objects.equals(serviceTier, "standard")) params.addProperty("serviceTier", serviceTier);
-        params.add("sandboxPolicy", sandboxPolicy(sandboxMode));
+        params.add("sandboxPolicy", sandboxPolicy(sandboxMode, approvalPolicy));
         var input = new JsonArray();
         addTextAndFileReferences(input, text, fileReferences);
         // 附件继续保持原有输入类型。
@@ -558,18 +576,19 @@ public final class CodexAppServerService implements Disposable {
         return input;
     }
 
-    private JsonObject sandboxPolicy(String mode) {
+    static JsonObject sandboxPolicy(String mode, String approvalPolicy) {
         var policy = new JsonObject();
+        var automatic = Objects.equals(approvalPolicy, "never");
         switch (Objects.requireNonNullElse(mode, "workspace-write")) {
             case "read-only" -> {
                 policy.addProperty("type", "readOnly");
-                policy.addProperty("networkAccess", false);
+                policy.addProperty("networkAccess", automatic);
             }
             case "danger-full-access" -> policy.addProperty("type", "dangerFullAccess");
             default -> {
                 policy.addProperty("type", "workspaceWrite");
                 policy.add("writableRoots", new JsonArray());
-                policy.addProperty("networkAccess", false);
+                policy.addProperty("networkAccess", automatic);
                 policy.addProperty("excludeTmpdirEnvVar", false);
                 policy.addProperty("excludeSlashTmp", false);
             }

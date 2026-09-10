@@ -6,7 +6,7 @@ export const BRIDGE_COMMAND_TYPES = [
   'cancelDrop', 'composerBounds', 'listProjectFiles', 'removeAttachment', 'removeFileReference',
   'removeFileReferences', 'addFileReferences', 'reorderFileReferences', 'acceptChange',
   'revertChange', 'acceptAll', 'revertAll', 'openChange', 'openChangeLocation', 'compact', 'review', 'rewind',
-  'mcp', 'usage', 'setting', 'selectProvider', 'activateProviderProfile', 'saveProviderProfile',
+  'mcp', 'usage', 'setting', 'addCustomModel', 'removeCustomModel', 'selectProvider', 'activateProviderProfile', 'saveProviderProfile',
   'deleteProviderProfile', 'checkProviders', 'behaviorSetting', 'browseNotificationSound',
   'testNotificationSound', 'toggleStreaming', 'toggleThinking', 'saveInstructions', 'savePrompt',
   'deletePrompt', 'selectPrompt', 'saveAgent', 'deleteAgent', 'selectAgent', 'loadMcp',

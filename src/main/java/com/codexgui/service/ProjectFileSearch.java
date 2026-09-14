@@ -37,7 +37,8 @@ public final class ProjectFileSearch {
             try {
                 var path = file.toNioPath().toAbsolutePath().normalize();
                 if (!path.startsWith(root)) return true;
-                candidates.add(new Candidate(root.relativize(path).toString().replace('\\', '/'), file.getName()));
+                var displayPath = root.relativize(path).toString().replace('\\', '/');
+                candidates.add(new Candidate(path, displayPath, file.getName()));
             } catch (RuntimeException ignored) {
                 // 单个无法转换的 VFS 节点不影响其它候选。
             }
@@ -49,20 +50,21 @@ public final class ProjectFileSearch {
     public static List<Candidate> list(Path root) {
         if (root == null || !Files.isDirectory(root)) return List.of();
 
+        var normalizedRoot = root.toAbsolutePath().normalize();
         var candidates = new ArrayList<Candidate>();
         try {
-            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+            Files.walkFileTree(normalizedRoot, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
-                    if (!directory.equals(root) && isSkippedDirectory(directory)) return FileVisitResult.SKIP_SUBTREE;
+                    if (!directory.equals(normalizedRoot) && isSkippedDirectory(directory)) return FileVisitResult.SKIP_SUBTREE;
                     return FileVisitResult.CONTINUE;
                 }
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
                     if (attributes.isRegularFile()) {
-                        var relativePath = root.relativize(file).toString().replace('\\', '/');
-                        candidates.add(new Candidate(relativePath, file.getFileName().toString()));
+                        var relativePath = normalizedRoot.relativize(file).toString().replace('\\', '/');
+                        candidates.add(new Candidate(file.toAbsolutePath().normalize(), relativePath, file.getFileName().toString()));
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -86,8 +88,8 @@ public final class ProjectFileSearch {
             .map(candidate -> new ScoredCandidate(candidate, score(candidate, normalizedQuery)))
             .filter(candidate -> candidate.score() >= 0)
             .sorted(Comparator.comparingInt(ScoredCandidate::score)
-                .thenComparingInt(candidate -> candidate.candidate().path().length())
-                .thenComparing(candidate -> candidate.candidate().path(), String.CASE_INSENSITIVE_ORDER))
+                .thenComparingInt(candidate -> candidate.candidate().displayPath().length())
+                .thenComparing(candidate -> candidate.candidate().displayPath(), String.CASE_INSENSITIVE_ORDER))
             .limit(limit)
             .map(ScoredCandidate::candidate)
             .toList();
@@ -104,7 +106,7 @@ public final class ProjectFileSearch {
 
     private static int score(Candidate candidate, String query) {
         if (query.isEmpty()) return 0;
-        var path = candidate.path().toLowerCase(Locale.ROOT);
+        var path = candidate.displayPath().toLowerCase(Locale.ROOT);
         var name = candidate.name().toLowerCase(Locale.ROOT);
         if (path.equals(query)) return 0;
         if (path.startsWith(query)) return 10 + path.length() - query.length();
@@ -130,7 +132,7 @@ public final class ProjectFileSearch {
         return score;
     }
 
-    public record Candidate(String path, String name) {
+    public record Candidate(Path path, String displayPath, String name) {
     }
 
     private record ScoredCandidate(Candidate candidate, int score) {

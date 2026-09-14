@@ -205,6 +205,7 @@ export class PromptEditor {
   private references = new Map<string, PromptFileReference>();
   private pendingSequence = 0;
   private externalDropPosition: number | null = null;
+  private draggedReferenceId: string | null = null;
 
   constructor(options: PromptEditorOptions) {
     this.options = options;
@@ -255,6 +256,9 @@ export class PromptEditor {
         copy: (_view, event) => this.handleCopy(event as ClipboardEvent, false),
         cut: (_view, event) => this.handleCopy(event as ClipboardEvent, true),
         paste: (_view, event) => this.handlePaste(event as ClipboardEvent),
+        dragstart: (_view, event) => this.handleReferenceDragStart(event as DragEvent),
+        dragend: () => this.finishReferenceDrag(),
+        drop: (_view, event) => this.handleReferenceDrop(event as DragEvent),
         compositionstart: () => false,
         compositionend: () => {
           queueMicrotask(() => this.options.onUpdate?.());
@@ -578,6 +582,40 @@ export class PromptEditor {
     event.preventDefault();
     this.requestReferences(payload.paths, payload.text, this.view.state.selection.from, this.view.state.selection.to);
     return true;
+  }
+
+  private handleReferenceDragStart(event: DragEvent): boolean {
+    const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-file-reference]') : null;
+    if (!target || !this.view.dom.contains(target)) return false;
+    this.draggedReferenceId = target.dataset.fileReference || null;
+    target.classList.add('dragging');
+    return false;
+  }
+
+  private handleReferenceDrop(event: DragEvent): boolean {
+    const draggedId = this.draggedReferenceId;
+    if (!draggedId) return false;
+    const entry = this.referenceNodes().find(item => item.reference.id === draggedId);
+    const target = this.view.posAtCoords({left: event.clientX, top: event.clientY});
+    this.finishReferenceDrag();
+    if (!entry || !target) return false;
+
+    // JCEF 可能在释放前丢失浏览器的 dragging 状态，因此按稳定 ID 显式完成原子节点移动。
+    event.preventDefault();
+    let transaction = this.view.state.tr.delete(entry.position, entry.position + entry.node.nodeSize);
+    const position = transaction.mapping.map(target.pos);
+    transaction = transaction.insert(position, entry.node);
+    if (transaction.doc.eq(this.view.state.doc)) return true;
+    transaction.setSelection(NodeSelection.create(transaction.doc, position));
+    this.view.focus();
+    this.view.dispatch(transaction.scrollIntoView().setMeta('uiEvent', 'drop'));
+    return true;
+  }
+
+  private finishReferenceDrag(): boolean {
+    this.draggedReferenceId = null;
+    this.view.dom.querySelectorAll('.file-reference-node.dragging').forEach(node => node.classList.remove('dragging'));
+    return false;
   }
 
   private readClipboardPayload(event: ClipboardEvent): PromptClipboardPayload | null {

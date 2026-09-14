@@ -98,6 +98,7 @@ public sealed interface BridgeCommand permits BridgeCommand.V1 {
         CANCEL_QUESTIONS("cancelQuestions"),
         CONVERSATION_SEARCH("conversationSearch"),
         OPEN_FILE("openFile"),
+        REVEAL_FILE("revealFile"),
         OPEN_URL("openUrl"),
         OPEN_SETTINGS("openSettings");
 

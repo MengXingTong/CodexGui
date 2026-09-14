@@ -19,7 +19,7 @@
       "deletePrompt", "selectPrompt", "saveAgent", "deleteAgent", "selectAgent", "loadMcp",
       "reloadMcp", "loadSkills", "reloadSkills", "setSkillEnabled", "importSkill", "openSkill",
       "openMcpConfig", "loginMcp", "saveMcp", "deleteMcp", "setMcpEnabled", "copyText",
-      "answerQuestions", "cancelQuestions", "conversationSearch", "openFile", "openUrl", "openSettings",
+      "answerQuestions", "cancelQuestions", "conversationSearch", "openFile", "revealFile", "openUrl", "openSettings",
       "bootstrap", "connection", "busy", "queue", "clear", "message", "replaceMessage",
       "appendMessage", "history", "changes", "attachments", "fileReferences", "fileContext", "projectFiles",
       "thread", "providers", "mcpServers", "mcpLog", "skillEnabled", "skills", "question", "toast",
@@ -53,7 +53,7 @@
     "deletePrompt", "selectPrompt", "saveAgent", "deleteAgent", "selectAgent", "loadMcp",
     "reloadMcp", "loadSkills", "reloadSkills", "setSkillEnabled", "importSkill", "openSkill",
     "openMcpConfig", "loginMcp", "saveMcp", "deleteMcp", "setMcpEnabled", "copyText",
-    "answerQuestions", "cancelQuestions", "conversationSearch", "openFile", "openUrl", "openSettings"
+    "answerQuestions", "cancelQuestions", "conversationSearch", "openFile", "revealFile", "openUrl", "openSettings"
   ],
   "x-eventTypes": [
     "bootstrap", "connection", "busy", "queue", "clear", "message", "replaceMessage",

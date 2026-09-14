@@ -136,6 +136,43 @@ test('捕获列表悬浮文件名时在上方显示相对路径并可打开所�
   expect(sent).toMatchObject({type: 'openChangeLocation', payload: {index: 0}});
 });
 
+test('AI 本地文件链接支持跳转编辑器并通过右键在资源管理器中打开', async ({page}) => {
+  await openEditor(page, false);
+  await page.evaluate(() => CodexGui.receive(previewEnvelope('message', {
+    entry: {
+      kind: 'assistant',
+      title: 'Codex',
+      itemId: 'local-file-link',
+      body: '[Main.cpp](/D:/Project/Source/Main.cpp:42:7)',
+    },
+  }) as never));
+
+  let link = page.locator('.file-link', {hasText: 'Main.cpp'});
+  await link.click();
+  let sent = await page.evaluate(() => (window as Window & {
+    previewLastMessage?: {type: string; payload: {path: string; line?: number; column?: number}};
+  }).previewLastMessage);
+  expect(sent).toMatchObject({
+    type: 'openFile',
+    payload: {path: '/D:/Project/Source/Main.cpp', line: 42, column: 7},
+  });
+
+  link = page.locator('.file-link', {hasText: 'Main.cpp'});
+  await link.click({button: 'right'});
+  const menu = page.locator('[data-file-link-menu]');
+  await expect(menu).toBeVisible();
+  await menu.getByRole('button', {name: '在资源管理器中打开'}).click();
+
+  sent = await page.evaluate(() => (window as Window & {
+    previewLastMessage?: {type: string; payload: {path: string}};
+  }).previewLastMessage);
+  expect(sent).toMatchObject({
+    type: 'revealFile',
+    payload: {path: '/D:/Project/Source/Main.cpp'},
+  });
+  await expect(menu).toHaveCount(0);
+});
+
 test('连续文件标签两侧的左右方向键始终推进一个逻辑位置', async ({page}) => {
   const editor = await openEditor(page);
   await seedNavigationDocument(editor);
@@ -203,6 +240,7 @@ test('文件补全与混合剪贴板使用异步书签恢复到原位置', async
   await editor.pressSequentially('前 @app');
   const completion = page.getByRole('option').filter({hasText: 'app.js'});
   await expect(completion).toBeVisible();
+  await expect(completion).toContainText('build/generated-resources/web/app.js');
   await completion.click();
   await editor.pressSequentially('后');
   await page.getByRole('button', {name: '新建页签'}).click();
@@ -234,6 +272,19 @@ test('文件补全与混合剪贴板使用异步书签恢复到原位置', async
   await editor.press('Control+v');
   await expect(editor.locator('[data-file-reference]')).toHaveCount(2);
   expect(await serializeEditor(editor)).toBe(`左${marker}中${marker}右后续`);
+});
+
+test('右键剪切文件标签后立即关闭菜单', async ({page}) => {
+  const editor = await openEditor(page);
+  await editor.locator('[data-file-reference]').first().click({button: 'right'});
+  const menu = page.locator('[data-file-reference-menu]');
+  await expect(menu).toBeVisible();
+
+  await menu.getByRole('button', {name: /剪切/}).click();
+
+  await expect(menu).toHaveCount(0);
+  await expect(editor.locator('[data-file-reference]')).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain('BoundaryDreamlandEditor.Target.cs');
 });
 
 test('中文组合、后台更新和页签重绘不销毁当前编辑状态', async ({page}) => {
@@ -283,10 +334,18 @@ test('换行、滚动、内部拖动和外部落点保持结构化文档', async
 
   editor = await openEditor(page);
   const chips = editor.locator('[data-file-reference]');
-  await chips.first().dragTo(chips.last());
+  const lastChipBox = await chips.last().boundingBox();
+  if (!lastChipBox) throw new Error('文件标签没有可用布局');
+  await chips.first().dragTo(chips.last(), {
+    targetPosition: {x: lastChipBox.width - 1, y: lastChipBox.height / 2},
+  });
   await expect.poll(async () => editor.locator('[data-file-reference]').evaluateAll(
     elements => elements.map(element => element.getAttribute('data-file-reference')),
-  )).not.toEqual(['ref-1', 'ref-2', 'ref-3']);
+  )).toEqual(['ref-2', 'ref-3', 'ref-1']);
+  await page.waitForTimeout(150);
+  await expect(editor.locator('[data-file-reference]').evaluateAll(
+    elements => elements.map(element => element.getAttribute('data-file-reference')),
+  )).resolves.toEqual(['ref-2', 'ref-3', 'ref-1']);
 
   const box = await editor.boundingBox();
   const firstChipBox = await chips.first().boundingBox();
@@ -327,6 +386,31 @@ test('自定义模型固定显示在供应商模型前并可直接添加', async
 
   await page.getByRole('button', {name: '添加自定义模型'}).click();
   await expect(page.locator('[data-menu="model"]')).toContainText('preview/custom-model');
+});
+
+test('展开模型选择器时自动定位当前模型', async ({page}) => {
+  await openEditor(page, false);
+  const models = Array.from({length: 30}, (_, index) => `provider/model-${index + 1}`);
+  const currentModel = models[24];
+  await page.evaluate(({items, selected}) => {
+    CodexGui.receive(previewEnvelope('bootstrap', {
+      state: {models: items, customModels: [], model: selected},
+    }));
+  }, {items: models, selected: currentModel});
+
+  await page.getByTitle('模型').click();
+  const menu = page.locator('.model-selector-menu');
+  const selected = menu.locator('.selector-option.selected');
+  await expect(selected).toHaveAttribute('data-value', currentModel);
+  await expect.poll(() => selected.evaluate(element => {
+    const menu = element.closest('.model-selector-menu');
+    if (!(menu instanceof HTMLElement)) return false;
+    const menuRect = menu.getBoundingClientRect();
+    const selectedRect = element.getBoundingClientRect();
+    return menu.scrollTop > 0
+      && selectedRect.top >= menuRect.top
+      && selectedRect.bottom <= menuRect.bottom;
+  })).toBe(true);
 });
 
 test('Codex 输入栏可选择完全访问沙箱', async ({page}) => {

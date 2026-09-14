@@ -291,6 +291,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                 case CANCEL_QUESTIONS -> answerQuestions(command, true);
                 case CONVERSATION_SEARCH -> searchConversation();
                 case OPEN_FILE -> openFileLocation(request);
+                case REVEAL_FILE -> revealFileLocation(request);
                 case OPEN_URL -> BrowserUtil.browse(string(request, "url", ""));
                 case OPEN_SETTINGS -> ShowSettingsUtil.getInstance().showSettingsDialog(project, "CodeDeck");
             }
@@ -1696,7 +1697,9 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             var items = new JsonArray();
             for (var file : files) {
                 var item = new JsonObject();
-                item.addProperty("path", file.path());
+                // 绝对路径用于创建引用，相对路径只负责候选列表展示，避免异步回传后书签匹配失败。
+                item.addProperty("path", file.path().toString());
+                item.addProperty("displayPath", file.displayPath());
                 item.addProperty("name", file.name());
                 items.add(item);
             }
@@ -1865,11 +1868,9 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
         var line = Math.max(1, integer(request, "line"));
         var column = Math.max(1, integer(request, "column"));
         try {
-            // 相对路径以当前项目为基准，绝对路径则直接使用 Codex 返回的位置。
-            var path = Path.of(normalizeReportedFilePath(rawPath));
-            if (!path.isAbsolute() && project.getBasePath() != null) path = Path.of(project.getBasePath()).resolve(path);
+            var path = resolveReportedFilePath(rawPath);
             // 先刷新本地文件，再按用户可见的行列位置打开编辑器。
-            var file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path.normalize());
+            var file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path);
             if (file == null) {
                 toast("无法打开文件：" + rawPath);
                 return;
@@ -1879,6 +1880,36 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             // 路径格式无效时给出提示，避免点击链接导致界面线程异常。
             toast("无法打开文件：" + rawPath);
         }
+    }
+
+    private void revealFileLocation(JsonObject request) {
+        var rawPath = string(request, "path", "").trim();
+        if (rawPath.isBlank()) return;
+        try {
+            var path = resolveReportedFilePath(rawPath);
+            // 文件存在时在系统文件管理器中选中。
+            if (Files.exists(path)) {
+                RevealFileAction.openFile(path);
+                return;
+            }
+            // 文件缺失时退回到仍存在的父目录。
+            var parent = path.getParent();
+            if (parent != null && Files.exists(parent)) {
+                RevealFileAction.openDirectory(parent);
+                return;
+            }
+            toast("无法打开文件所在目录：" + rawPath);
+        } catch (RuntimeException error) {
+            // 路径格式无效时保持与编辑器跳转一致的可见反馈。
+            toast("无法打开文件所在目录：" + rawPath);
+        }
+    }
+
+    private Path resolveReportedFilePath(String rawPath) {
+        // 相对路径以当前项目为基准，绝对路径直接使用 AI 返回的位置。
+        var path = Path.of(normalizeReportedFilePath(rawPath));
+        if (!path.isAbsolute() && project.getBasePath() != null) path = Path.of(project.getBasePath()).resolve(path);
+        return path.normalize();
     }
 
     static String normalizeReportedFilePath(String rawPath) {

@@ -36,11 +36,11 @@
       {name:'design-system',enabled:true,connectionStatus:'failed',config:{url:'http://127.0.0.1:8088/mcp',http_headers:{Authorization:'Bearer demo-secret'}},authStatus:'notLoggedIn',pluginId:'design-tools',serverInfo:null,tools:{},resources:[],resourceTemplates:[]}
     ];
     const previewFiles = [
-      {name:'app.js',path:'build/generated-resources/web/app.js'},
-      {name:'app.css',path:'src/main/resources/web/app.css'},
-      {name:'CodexToolWindowPanel.java',path:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java'},
-      {name:'ProjectFileSearch.java',path:'src/main/java/com/codexgui/service/ProjectFileSearch.java'},
-      {name:'README.md',path:'README.md'}
+      {name:'app.js',path:'E:\\Projects\\BoundaryDreamland\\build\\generated-resources\\web\\app.js',displayPath:'build/generated-resources/web/app.js'},
+      {name:'app.css',path:'E:\\Projects\\BoundaryDreamland\\src\\main\\resources\\web\\app.css',displayPath:'src/main/resources/web/app.css'},
+      {name:'CodexToolWindowPanel.java',path:'E:\\Projects\\BoundaryDreamland\\src\\main\\java\\com\\codexgui\\ui\\CodexToolWindowPanel.java',displayPath:'src/main/java/com/codexgui/ui/CodexToolWindowPanel.java'},
+      {name:'ProjectFileSearch.java',path:'E:\\Projects\\BoundaryDreamland\\src\\main\\java\\com\\codexgui\\service\\ProjectFileSearch.java',displayPath:'src/main/java/com/codexgui/service/ProjectFileSearch.java'},
+      {name:'README.md',path:'E:\\Projects\\BoundaryDreamland\\README.md',displayPath:'README.md'}
     ];
     let previewEventSequence = 0;
     const previewEnvelope = (type,payload={},request={}) => ({v:1,type,requestId:String(request.requestId||`preview-${++previewEventSequence}`),sessionId:String(request.sessionId||previewState.sessionId||'default'),turnId:String(request.turnId||''),generation:Math.max(0,Number(request.generation)||0),payload});
@@ -164,7 +164,7 @@
       }
       if (message.action === 'listProjectFiles') {
         const query = String(message.query || '').toLowerCase();
-        const items = previewFiles.filter(item => !query || item.path.toLowerCase().includes(query) || item.name.toLowerCase().includes(query));
+        const items = previewFiles.filter(item => !query || item.displayPath.toLowerCase().includes(query) || item.name.toLowerCase().includes(query));
         setTimeout(() => previewReceive('projectFiles',{items},{requestId:message.requestId}), 25);
       }
       if (message.action === 'setMcpEnabled') {

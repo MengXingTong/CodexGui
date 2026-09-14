@@ -22,8 +22,9 @@ class ProjectFileSearchTest {
 
         var matches = ProjectFileSearch.find(root, "app", 10);
 
-        assertEquals("src/main/resources/web/app.js", matches.getFirst().path());
-        assertEquals("src/test/java/AppServiceTest.java", matches.get(1).path());
+        assertEquals(root.resolve("src/main/resources/web/app.js").toAbsolutePath().normalize(), matches.getFirst().path());
+        assertEquals("src/main/resources/web/app.js", matches.getFirst().displayPath());
+        assertEquals("src/test/java/AppServiceTest.java", matches.get(1).displayPath());
     }
 
     @Test
@@ -32,8 +33,8 @@ class ProjectFileSearchTest {
         create("README.md");
 
         assertEquals("src/main/java/com/codexgui/ui/CodexToolWindowPanel.java",
-            ProjectFileSearch.find(root, "ui/codextool", 10).getFirst().path());
-        assertEquals("README.md", ProjectFileSearch.find(root, "rdm", 10).getFirst().path());
+            ProjectFileSearch.find(root, "ui/codextool", 10).getFirst().displayPath());
+        assertEquals("README.md", ProjectFileSearch.find(root, "rdm", 10).getFirst().displayPath());
     }
 
     @Test
@@ -46,7 +47,7 @@ class ProjectFileSearchTest {
         var matches = ProjectFileSearch.find(root, "", 1);
 
         assertEquals(1, matches.size());
-        assertFalse(matches.stream().anyMatch(item -> item.path().startsWith("build/") || item.path().startsWith("node_modules/")));
+        assertFalse(matches.stream().anyMatch(item -> item.displayPath().startsWith("build/") || item.displayPath().startsWith("node_modules/")));
     }
 
     private void create(String relativePath) throws IOException {

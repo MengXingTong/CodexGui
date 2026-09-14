@@ -12,7 +12,7 @@ export const BRIDGE_COMMAND_TYPES = [
   'deletePrompt', 'selectPrompt', 'saveAgent', 'deleteAgent', 'selectAgent', 'loadMcp',
   'reloadMcp', 'loadSkills', 'reloadSkills', 'setSkillEnabled', 'importSkill', 'openSkill',
   'openMcpConfig', 'loginMcp', 'saveMcp', 'deleteMcp', 'setMcpEnabled', 'copyText',
-  'answerQuestions', 'cancelQuestions', 'conversationSearch', 'openFile', 'openUrl', 'openSettings',
+  'answerQuestions', 'cancelQuestions', 'conversationSearch', 'openFile', 'revealFile', 'openUrl', 'openSettings',
 ] as const;
 
 export const BRIDGE_EVENT_TYPES = [
@@ -44,7 +44,7 @@ type CommandPayload<T extends BridgeCommandType> =
 
 type EventPayload<T extends BridgeEventType> =
   T extends 'appendMessage' ? {itemId: string; kind: string; title: string; delta: string} :
-  T extends 'projectFiles' ? {items: Array<{name: string; path: string}>} :
+  T extends 'projectFiles' ? {items: Array<{name: string; path: string; displayPath?: string}>} :
   T extends 'toast' ? {message: string; providerSaveSuccess?: boolean} :
   T extends 'protocol.error' ? {code: string; message: string; receivedType?: string} :
   Record<string, unknown>;

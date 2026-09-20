@@ -648,7 +648,12 @@ export class PromptEditor {
     }
 
     const plain = event.clipboardData?.getData('text/plain') || '';
-    const match = /^@((?:[a-zA-Z]:[\\/]|\\\\|\/).+)$/.exec(plain.trim());
+    const trimmed = plain.trim();
+
+    // Markdown 行内代码复制后可能保留首尾反引号，先剥离完整包裹再识别绝对路径。
+    const inlineCode = /^(`+)([\s\S]*?)\1$/.exec(trimmed);
+    const value = (inlineCode?.[2] || trimmed).trim();
+    const match = /^@((?:[a-zA-Z]:[\\/]|\\\\|\/).+)$/.exec(value);
     if (!match) return null;
 
     // 从“文件路径的成员描述”中剥离中文说明，避免把成员名一起交给后端校验。

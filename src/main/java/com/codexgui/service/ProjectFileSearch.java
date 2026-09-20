@@ -1,7 +1,6 @@
 package com.codexgui.service;
 
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.roots.ProjectFileIndex;
 
 import java.io.IOException;
 import java.nio.file.FileVisitResult;
@@ -17,7 +16,8 @@ import java.util.Set;
 
 public final class ProjectFileSearch {
     private static final Set<String> SKIPPED_DIRECTORIES = Set.of(
-        ".git", ".gradle", ".idea", "build", "out", "node_modules", "target", ".next", ".cache"
+        ".git", ".gradle", ".idea", ".vs", ".vscode", "build", "out", "node_modules", "target",
+        ".next", ".cache", "binaries", "deriveddatacache", "intermediate", "saved"
     );
 
     private ProjectFileSearch() {
@@ -29,22 +29,8 @@ public final class ProjectFileSearch {
 
     public static List<Candidate> list(Project project) {
         if (project == null || project.isDisposed() || project.getBasePath() == null) return List.of();
-        var root = Path.of(project.getBasePath()).toAbsolutePath().normalize();
-        var candidates = new ArrayList<Candidate>();
-        // ProjectFileIndex 已遵循模块内容根、排除目录和 IDE ignore 规则，避免手动遍历大型生成目录。
-        ProjectFileIndex.getInstance(project).iterateContent(file -> {
-            if (file.isDirectory()) return true;
-            try {
-                var path = file.toNioPath().toAbsolutePath().normalize();
-                if (!path.startsWith(root)) return true;
-                var displayPath = root.relativize(path).toString().replace('\\', '/');
-                candidates.add(new Candidate(path, displayPath, file.getName()));
-            } catch (RuntimeException ignored) {
-                // 单个无法转换的 VFS 节点不影响其它候选。
-            }
-            return true;
-        });
-        return List.copyOf(candidates);
+        // 工作区文件不一定属于 Rider 的模块内容根，例如 Unreal 项目的 Content 资源目录。
+        return list(Path.of(project.getBasePath()));
     }
 
     public static List<Candidate> list(Path root) {
@@ -56,12 +42,14 @@ public final class ProjectFileSearch {
             Files.walkFileTree(normalizedRoot, new SimpleFileVisitor<>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path directory, BasicFileAttributes attributes) {
+                    // 跳过依赖、缓存和构建产物目录，避免大型项目的候选被生成文件淹没。
                     if (!directory.equals(normalizedRoot) && isSkippedDirectory(directory)) return FileVisitResult.SKIP_SUBTREE;
                     return FileVisitResult.CONTINUE;
                 }
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                    // 只收集普通文件，目录和特殊文件不作为 @ 引用候选。
                     if (attributes.isRegularFile()) {
                         var relativePath = normalizedRoot.relativize(file).toString().replace('\\', '/');
                         candidates.add(new Candidate(file.toAbsolutePath().normalize(), relativePath, file.getFileName().toString()));
@@ -71,7 +59,7 @@ public final class ProjectFileSearch {
 
                 @Override
                 public FileVisitResult visitFileFailed(Path file, IOException error) {
-                    // A single unreadable file must not suppress completions from the rest of the project.
+                    // 单个不可读文件不影响工作区内的其它候选。
                     return FileVisitResult.CONTINUE;
                 }
             });

@@ -330,7 +330,8 @@ button { color: inherit; }
 .attachment-name { max-width: 100%; margin-top: 2px; overflow: hidden; color: #666; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-remove { position: absolute; top: 2px; right: 2px; width: 16px; height: 16px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; background: rgba(0,0,0,.7); color: white; cursor: pointer; opacity: 0; font-size: 10px; }
 .attachment-item:hover .attachment-remove { opacity: 1; }
-.file-reference-node { max-width: min(264px, calc(100% - 4px)); height: 20px; display: inline-block; box-sizing: border-box; margin: 0 2px; padding: 0 2px; vertical-align: middle; line-height: 20px; }
+/* 文件标签按文字基线微调，让不同高度的标签与正文视觉中线重合。 */
+.file-reference-node { max-width: min(264px, calc(100% - 4px)); height: 20px; display: inline-block; box-sizing: border-box; margin: 0 2px; padding: 0 2px; vertical-align: .5px; line-height: 20px; }
 .file-reference-chip { position: relative; max-width: 100%; height: 20px; display: inline-flex; box-sizing: border-box; align-items: center; gap: 4px; padding: 1px 4px 1px 6px; vertical-align: middle; border: 1px solid var(--border-strong); border-radius: 4px; background: #252526; color: var(--text); font-size: 12px; user-select: all; cursor: grab; }
 .file-reference-node.dragging { opacity: .45; cursor: grabbing; }
 .file-reference-node.ProseMirror-selectednode .file-reference-chip { border-color: var(--accent); outline: 1px solid var(--accent); cursor: grab; }
@@ -372,6 +373,8 @@ button { color: inherit; }
 .submit { width: 28px; height: 28px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 4px; background: var(--accent); color: white; cursor: pointer; }
 .submit:hover { background: var(--accent-hover); }
 .submit:disabled { opacity: .35; cursor: default; }
+.submit.steer { border: 1px solid var(--accent); background: transparent; color: var(--accent); }
+.submit.steer:hover { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .submit.stop { background: #d9534f; }
 .submit svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
 .connection { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: #777; }

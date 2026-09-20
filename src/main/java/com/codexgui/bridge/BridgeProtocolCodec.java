@@ -63,8 +63,8 @@ public final class BridgeProtocolCodec {
         var type = BridgeCommand.Type.fromWireName(envelope.get("type").getAsString());
         if (type == null) return rejected("unknown_type", "未知 Bridge command 类型", envelope);
         var payload = envelope.getAsJsonObject("payload");
-        if (type == BridgeCommand.Type.SEND && !validSendPayload(payload)) {
-            return rejected("invalid_payload", "send payload 必须包含 text 和 referenceIds", envelope);
+        if ((type == BridgeCommand.Type.SEND || type == BridgeCommand.Type.STEER) && !validSendPayload(payload)) {
+            return rejected("invalid_payload", type.wireName() + " payload 必须包含 text 和 referenceIds", envelope);
         }
         var generation = envelope.get("generation").getAsLong();
         if (generation < 0) return rejected("missing_identity", "Bridge generation 不能为负数", envelope);

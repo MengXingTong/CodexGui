@@ -1,7 +1,7 @@
 export const BRIDGE_VERSION = 1 as const;
 
 export const BRIDGE_COMMAND_TYPES = [
-  'ready', 'reconnect', 'send', 'stop', 'new', 'closeSession', 'activateSession',
+  'ready', 'reconnect', 'send', 'steer', 'stop', 'new', 'closeSession', 'activateSession',
   'history', 'openThread', 'rename', 'export', 'pickFile', 'pickImage', 'dropFiles',
   'cancelDrop', 'composerBounds', 'listProjectFiles', 'removeAttachment', 'removeFileReference',
   'removeFileReferences', 'addFileReferences', 'reorderFileReferences', 'acceptChange',
@@ -36,7 +36,7 @@ export interface BridgeEnvelope<TType extends string, TPayload extends object> {
 }
 
 type CommandPayload<T extends BridgeCommandType> =
-  T extends 'send' ? {text: string; referenceIds: string[]} :
+  T extends 'send' | 'steer' ? {text: string; referenceIds: string[]} :
   T extends 'new' ? {title?: string; skipConfirmation?: boolean} :
   T extends 'listProjectFiles' ? {query: string} :
   T extends 'answerQuestions' ? {answers: Record<string, {answers: string[]}>} :

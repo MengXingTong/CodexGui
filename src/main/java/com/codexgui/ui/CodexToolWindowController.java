@@ -212,6 +212,7 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
                     return null;
                 });
                 case SEND -> sendInput(string(request, "text", ""), request.has("referenceIds") ? array(request, "referenceIds") : null);
+                case STEER -> steerInput(string(request, "text", ""), request.has("referenceIds") ? array(request, "referenceIds") : null);
                 case STOP -> interruptCurrentTurn();
                 case NEW -> newConversation(
                     string(request, "title", ""),
@@ -432,6 +433,63 @@ final class CodexToolWindowController implements Disposable, CodexEventListener 
             return;
         }
         sendInput(session, text);
+    }
+
+    private void steerInput(String text, JsonArray referenceIds) {
+        var session = activeSession();
+        text = text.trim();
+        // 回合刚好结束时按普通消息发送，避免用户输入丢失。
+        if (!session.busy()) {
+            sendInput(text, referenceIds);
+            return;
+        }
+        // Claude Code CLI 不支持向当前进程追加输入，降级排队以保留用户输入。
+        if (!Objects.equals(session.provider(), "codex")) {
+            sendInput(text, referenceIds);
+            toast("Claude Code 运行中暂不支持立即引导，消息已加入队列");
+            return;
+        }
+        if (referenceIds != null && !applySendReferenceOrder(session, text, referenceIds)) return;
+        if (text.isBlank() && session.attachments().isEmpty() && session.fileReferences().isEmpty()) return;
+        if (session.threadId() == null || session.threadId().isBlank()
+            || session.providerTurnId() == null || session.providerTurnId().isBlank()) {
+            enqueueInput(text);
+            toast("当前回合尚未准备好接收引导，消息已加入队列");
+            return;
+        }
+
+        // 引导消息立即归入当前回合，并保留乐观消息用于抵消 app-server 回推。
+        var input = prepareInput(session, text);
+        addEntry(session, new ConversationEntry(
+            ConversationEntry.Kind.USER,
+            "你",
+            input.display(),
+            null,
+            input.fileReferences().stream().map(reference -> absolutePath(reference.path())).toList()
+        ));
+        session.pendingUserMessageCount(session.pendingUserMessageCount() + 1);
+        session.attachments().clear();
+        session.clearFileReferences();
+        publishAttachments(session);
+        publishFileReferences(session);
+
+        var turnHandle = session.handle();
+        codex.steerTurn(
+            session.threadId(),
+            session.providerTurnId(),
+            input.inputText(),
+            input.attachments(),
+            input.fileReferences()
+        ).exceptionally(error -> {
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (!sessionCoordinator.isCurrent(turnHandle)) return;
+                if (session.pendingUserMessageCount() > 0) {
+                    session.pendingUserMessageCount(session.pendingUserMessageCount() - 1);
+                }
+                asyncError(session, "无法引导当前回合", error);
+            });
+            return null;
+        });
     }
 
     private boolean applySendReferenceOrder(ConversationSession session, String text, JsonArray ids) {

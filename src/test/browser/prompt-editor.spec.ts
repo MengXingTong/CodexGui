@@ -71,20 +71,32 @@ test('文件标签不改变文字光标高度并为两侧光标保留间隔', as
   await editor.press('ArrowRight');
   await expect.poll(() => selectionSignature(editor)).toBe('3:3');
 
-  const layout = await lastReference.evaluate(element => {
+  // 插入混合内容后同时校验文字与标签中线，防止标签贴着文字顶端排列。
+  const firstReference = editor.locator('[data-file-reference]').first();
+  await firstReference.click();
+  await editor.press('ArrowLeft');
+  await editor.pressSequentially('测试Ag');
+  const layout = await firstReference.evaluate(element => {
     const chip = element.querySelector('.file-reference-chip');
     if (!(chip instanceof HTMLElement)) throw new Error('文件标签缺少可视节点');
     const atomRect = element.getBoundingClientRect();
     const chipRect = chip.getBoundingClientRect();
     const editor = element.closest('.input');
     if (!(editor instanceof HTMLElement)) throw new Error('文件标签缺少输入框');
+    const textNode = editor.firstChild;
+    if (!(textNode instanceof Text)) throw new Error('文件标签前缺少测试文字');
+    const textRange = document.createRange();
+    textRange.selectNode(textNode);
+    const textRect = textRange.getBoundingClientRect();
     const editorStyle = getComputedStyle(editor);
     return {
       atomLeft: atomRect.left,
       atomRight: atomRect.right,
       atomHeight: atomRect.height,
+      atomCenterY: (atomRect.top + atomRect.bottom) / 2,
       chipLeft: chipRect.left,
       chipRight: chipRect.right,
+      textCenterY: (textRect.top + textRect.bottom) / 2,
       atomEditable: element.getAttribute('contenteditable'),
       editorFontSize: editorStyle.fontSize,
       editorLineHeight: Number.parseFloat(editorStyle.lineHeight),
@@ -93,6 +105,7 @@ test('文件标签不改变文字光标高度并为两侧光标保留间隔', as
   expect(layout.chipLeft - layout.atomLeft).toBeGreaterThanOrEqual(2);
   expect(layout.atomRight - layout.chipRight).toBeGreaterThanOrEqual(2);
   expect(Math.abs(layout.atomHeight - layout.editorLineHeight)).toBeLessThanOrEqual(1);
+  expect(Math.abs(layout.atomCenterY - layout.textCenterY)).toBeLessThanOrEqual(.5);
   expect(layout.editorFontSize).toBe('13px');
   expect(layout.atomEditable).toBe('false');
 });
@@ -274,6 +287,22 @@ test('文件补全与混合剪贴板使用异步书签恢复到原位置', async
   expect(await serializeEditor(editor)).toBe(`左${marker}中${marker}右后续`);
 });
 
+test('粘贴行内代码包裹的 Unreal 源码路径和函数名时生成文件标签', async ({page}) => {
+  const editor = await openEditor(page, false);
+  const path = 'D:\\TanKun\\_DevMain\\_Ali\\UnrealEngine\\Projects\\JinYongPVP\\Source\\JinYongPVP\\UIController\\LobbyUIController\\RepairUIController\\RepairUIController.cpp';
+
+  await editor.evaluate((element, text) => {
+    const clipboard = new DataTransfer();
+    clipboard.setData('text/plain', text);
+    element.dispatchEvent(new ClipboardEvent('paste', {bubbles: true, cancelable: true, clipboardData: clipboard}));
+  }, `\`@${path}的ResponseRepairEquipment  \``);
+
+  const reference = editor.locator('[data-file-reference]');
+  await expect(reference).toHaveCount(1);
+  await expect(reference).toHaveAttribute('title', path);
+  expect(await serializeEditor(editor)).toBe(`${marker}的ResponseRepairEquipment`);
+});
+
 test('右键剪切文件标签后立即关闭菜单', async ({page}) => {
   const editor = await openEditor(page);
   await editor.locator('[data-file-reference]').first().click({button: 'right'});
@@ -443,4 +472,30 @@ test('其它页签运行时仍可在空闲页签切换 Claude 渠道', async ({p
   }).previewLastMessage);
   expect(sent).toMatchObject({type: 'new', payload: {provider: 'claude'}});
   expect(sent?.sessionId).not.toBe('default');
+});
+
+test('运行中普通发送进入队列且可显式立即引导', async ({page}) => {
+  const editor = await openEditor(page, false);
+  await page.evaluate(() => CodexGui.receive(previewEnvelope('busy', {busy: true, queuedCount: 0})));
+
+  await expect(page.getByTitle('排队发送')).toBeVisible();
+  await expect(page.getByTitle('立即引导')).toBeVisible();
+  await expect(page.getByTitle('停止')).toBeVisible();
+
+  await editor.pressSequentially('稍后处理');
+  await editor.press('Enter');
+  const queued = await page.evaluate(() => (window as Window & {
+    previewLastMessage?: {type: string; payload: {text: string; referenceIds: string[]}};
+  }).previewLastMessage);
+  expect(queued).toMatchObject({type: 'send', payload: {text: '稍后处理', referenceIds: []}});
+
+  await page.evaluate(() => CodexGui.receive(previewEnvelope('queue', {queuedCount: 1})));
+  await expect(page.getByRole('status')).toContainText('已排队 1 条');
+
+  await editor.pressSequentially('立即调整方向');
+  await page.getByTitle('立即引导').click();
+  const steered = await page.evaluate(() => (window as Window & {
+    previewLastMessage?: {type: string; payload: {text: string; referenceIds: string[]}};
+  }).previewLastMessage);
+  expect(steered).toMatchObject({type: 'steer', payload: {text: '立即调整方向', referenceIds: []}});
 });

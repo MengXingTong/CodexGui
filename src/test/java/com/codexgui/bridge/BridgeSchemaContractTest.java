@@ -67,7 +67,7 @@ final class BridgeSchemaContractTest {
         assertTrue(fixture.get("payload").isJsonObject());
         var allowed = strings(schema.getAsJsonObject("properties").getAsJsonObject("type"), "enum");
         assertTrue(allowed.contains(fixture.get("type").getAsString()));
-        if (fixture.get("type").getAsString().equals("send")) {
+        if (Set.of("send", "steer").contains(fixture.get("type").getAsString())) {
             var payload = fixture.getAsJsonObject("payload");
             assertTrue(payload.has("text"));
             assertTrue(payload.has("referenceIds") && payload.get("referenceIds").isJsonArray());

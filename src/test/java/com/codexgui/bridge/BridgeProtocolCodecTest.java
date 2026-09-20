@@ -77,6 +77,21 @@ final class BridgeProtocolCodecTest {
     }
 
     @Test
+    void steerUsesTheSameStructuredInputContractAsSend() {
+        var decoded = assertInstanceOf(BridgeProtocolCodec.Decoded.class, codec.decodeCommand("""
+            {"v":1,"type":"steer","requestId":"6","sessionId":"s","turnId":"turn-1","generation":2,
+             "payload":{"text":"调整当前实现","referenceIds":[]}}
+            """));
+
+        assertEquals(BridgeCommand.Type.STEER, decoded.command().type());
+        assertEquals("调整当前实现", decoded.command().payload().get("text").getAsString());
+        assertProtocolError("invalid_payload", """
+            {"v":1,"type":"steer","requestId":"7","sessionId":"s","turnId":"turn-1","generation":2,
+             "payload":{"text":"缺少引用顺序"}}
+            """);
+    }
+
+    @Test
     void legacyCommandOnlyEntersThroughCompatibilityAdapter() {
         var decoded = assertInstanceOf(BridgeProtocolCodec.Decoded.class, codec.decodeCommand(
             "{\"action\":\"send\",\"sessionId\":\"legacy-session\",\"text\":\"hello\"}"));

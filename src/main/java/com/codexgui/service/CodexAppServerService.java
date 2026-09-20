@@ -205,7 +205,7 @@ public final class CodexAppServerService implements Disposable {
             var clientInfo = new JsonObject();
             clientInfo.addProperty("name", "codedeck-jetbrains");
             clientInfo.addProperty("title", "CodeDeck for JetBrains");
-            clientInfo.addProperty("version", "0.5.3");
+            clientInfo.addProperty("version", "1.0");
             var params = new JsonObject();
             params.add("clientInfo", clientInfo);
             params.add("capabilities", capabilities);
@@ -515,6 +515,24 @@ public final class CodexAppServerService implements Disposable {
         for (var attachment : attachments) input.add(attachmentInput(attachment));
         params.add("input", input);
         return request("turn/start", params);
+    }
+
+    public CompletableFuture<JsonObject> steerTurn(
+        String threadId,
+        String expectedTurnId,
+        String text,
+        List<Attachment> attachments,
+        List<FileReference> fileReferences
+    ) {
+        var params = new JsonObject();
+        params.addProperty("threadId", threadId);
+        params.addProperty("expectedTurnId", expectedTurnId);
+        var input = new JsonArray();
+        addTextAndFileReferences(input, text, fileReferences);
+        // 引导消息沿用普通回合的附件结构，确保图片和文件引用语义一致。
+        for (var attachment : attachments) input.add(attachmentInput(attachment));
+        params.add("input", input);
+        return request("turn/steer", params);
     }
 
     private void addTextAndFileReferences(JsonArray input, String text, List<FileReference> fileReferences) {

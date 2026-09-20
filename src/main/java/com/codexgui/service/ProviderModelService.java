@@ -113,7 +113,7 @@ public final class ProviderModelService {
         var builder = HttpRequest.newBuilder(endpoint)
             .timeout(REQUEST_TIMEOUT)
             .header("Accept", "application/json")
-            .header("User-Agent", "CodeDeck/0.5.3")
+            .header("User-Agent", "CodeDeck/1.0")
             .GET();
 
         // 两类渠道沿用各自 CLI 的认证约定，避免模型请求与实际会话使用不同凭据。

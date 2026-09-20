@@ -113,6 +113,20 @@ describe('PromptEditor 引用事务', () => {
     });
   });
 
+  it('粘贴行内代码包裹的源码路径和函数名时自动转换为引用', () => {
+    const path = 'D:\\TanKun\\_DevMain\\_Ali\\UnrealEngine\\Projects\\JinYongPVP\\Source\\JinYongPVP\\UIController\\LobbyUIController\\RepairUIController\\RepairUIController.cpp';
+    const {editor, callbacks} = createEditor({segments: [], anchor: 0, head: 0});
+
+    pastePlainText(editor, `\`@${path}的ResponseRepairEquipment  \``);
+    expect(callbacks.onAddReferences).toHaveBeenCalledWith([path]);
+
+    editor.reconcileReferences([{...firstReference, name: 'RepairUIController.cpp', path}]);
+    expect(editor.serializeForSend()).toEqual({
+      text: `${PROMPT_REFERENCE_MARKER}的ResponseRepairEquipment`,
+      referenceIds: ['ref-1'],
+    });
+  });
+
   it('异步引用书签会跨后续输入映射并插入原位置', () => {
     const {editor, callbacks} = createEditor({segments: [{type: 'text', text: 'ab'}], anchor: 1, head: 1});
 

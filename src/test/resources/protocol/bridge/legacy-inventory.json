@@ -1,6 +1,6 @@
 {
   "commands": [
-    "ready", "reconnect", "send", "stop", "new", "closeSession", "activateSession",
+    "ready", "reconnect", "send", "steer", "stop", "new", "closeSession", "activateSession",
     "history", "openThread", "rename", "export", "pickFile", "pickImage", "dropFiles",
     "cancelDrop", "composerBounds", "listProjectFiles", "removeAttachment", "removeFileReference",
     "removeFileReferences", "addFileReferences", "reorderFileReferences", "acceptChange",
